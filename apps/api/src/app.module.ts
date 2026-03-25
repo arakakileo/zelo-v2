@@ -8,6 +8,7 @@ import { AuthModule } from './modules/auth/auth.module';
 import { ClinicasModule } from './modules/clinicas/clinicas.module';
 import { ConvitesModule } from './modules/convites/convites.module';
 import { PacientesModule } from './modules/pacientes/pacientes.module';
+import { TestesModule } from './modules/testes/testes.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { PacientesModule } from './modules/pacientes/pacientes.module';
     ClinicasModule,
     ConvitesModule,
     PacientesModule,
+    TestesModule,
   ],
   providers: [
     {
