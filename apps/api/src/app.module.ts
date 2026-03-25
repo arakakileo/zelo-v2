@@ -7,6 +7,7 @@ import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
 import { ClinicasModule } from './modules/clinicas/clinicas.module';
 import { ConvitesModule } from './modules/convites/convites.module';
+import { PacientesModule } from './modules/pacientes/pacientes.module';
 
 @Module({
   imports: [
@@ -19,6 +20,7 @@ import { ConvitesModule } from './modules/convites/convites.module';
     AuthModule,
     ClinicasModule,
     ConvitesModule,
+    PacientesModule,
   ],
   providers: [
     {
