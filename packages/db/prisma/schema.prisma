@@ -1,0 +1,403 @@
+// =============================================================
+// Zelo V2 — Prisma Schema
+// SaaS multi-tenant para gestão de consultórios de psicologia
+// =============================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─────────────────────────────────────────────
+// Enums
+// ─────────────────────────────────────────────
+
+enum Papel {
+  ADMIN
+  PSICOLOGO
+}
+
+enum StatusSessao {
+  ABERTO
+  FINALIZADO
+  CANCELADO
+}
+
+enum TipoContato {
+  EMAIL
+  TELEFONE
+  CELULAR
+  WHATSAPP
+}
+
+enum TipoCupom {
+  FIXO
+  PERCENTUAL_DESCONTO
+  PERCENTUAL_BONUS
+}
+
+enum TipoTransacao {
+  CREDITO
+  DEBITO
+  BONUS
+  ESTORNO
+}
+
+// ─────────────────────────────────────────────
+// Usuários e Identidade
+// ─────────────────────────────────────────────
+
+model User {
+  id            String   @id @default(uuid()) @db.Uuid
+  email         String   @unique
+  senhaHash     String
+  nomeCompleto  String
+  cpfEncrypted  String   @db.Text
+  cpfHash       String   @unique @db.Char(64)
+
+  // Audit
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  deletedAt     DateTime?
+
+  // Relations
+  memberships       Membership[]
+  convitesEnviados  Convite[]         @relation("ConviteEnviadoPor")
+  enderecos         UserEndereco[]
+  contatos          UserContato[]
+  transacoes        Transacao[]
+  pacientes         Paciente[]        @relation("PacienteResponsavel")
+  sessoesAplicadas  SessaoTeste[]     @relation("SessaoAplicadaPor")
+  sessoesFinalizadas SessaoTeste[]    @relation("SessaoFinalizadaPor")
+
+  @@index([deletedAt])
+  @@map("users")
+}
+
+model UserEndereco {
+  id                    String    @id @default(uuid()) @db.Uuid
+  userId                String    @db.Uuid
+  logradouroEncrypted   String    @db.Text
+  bairroEncrypted       String    @db.Text
+  complementoEncrypted  String?   @db.Text
+  cep                   String    @db.VarChar(8)
+  numero                String    @db.VarChar(20)
+  cidade                String    @db.VarChar(100)
+  estado                String    @db.Char(2)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  user                  User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, deletedAt])
+  @@map("user_enderecos")
+}
+
+model UserContato {
+  id              String      @id @default(uuid()) @db.Uuid
+  userId          String      @db.Uuid
+  tipo            TipoContato
+  valorEncrypted  String      @db.Text
+  valorHash       String      @db.Char(64)
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  user            User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, deletedAt])
+  @@index([valorHash])
+  @@map("user_contatos")
+}
+
+// ─────────────────────────────────────────────
+// Clínicas e Multi-tenancy
+// ─────────────────────────────────────────────
+
+model Clinica {
+  id                String   @id @default(uuid()) @db.Uuid
+  razaoSocial       String
+  nomeFantasia      String?
+  cnpjCpfEncrypted  String   @db.Text
+  cnpjCpfHash       String   @unique @db.Char(64)
+
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+  deletedAt         DateTime?
+
+  // Relations
+  memberships       Membership[]
+  convites          Convite[]
+  enderecos         ClinicaEndereco[]
+  contatos          ClinicaContato[]
+  carteira          Carteira?
+  pacientes         Paciente[]
+  sessoesTeste      SessaoTeste[]
+
+  @@index([deletedAt])
+  @@map("clinicas")
+}
+
+model ClinicaEndereco {
+  id                    String    @id @default(uuid()) @db.Uuid
+  clinicaId             String    @db.Uuid
+  logradouroEncrypted   String    @db.Text
+  bairroEncrypted       String    @db.Text
+  complementoEncrypted  String?   @db.Text
+  cep                   String    @db.VarChar(8)
+  numero                String    @db.VarChar(20)
+  cidade                String    @db.VarChar(100)
+  estado                String    @db.Char(2)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  clinica               Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+
+  @@index([clinicaId, deletedAt])
+  @@map("clinica_enderecos")
+}
+
+model ClinicaContato {
+  id              String      @id @default(uuid()) @db.Uuid
+  clinicaId       String      @db.Uuid
+  tipo            TipoContato
+  valorEncrypted  String      @db.Text
+  valorHash       String      @db.Char(64)
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  clinica         Clinica     @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+
+  @@index([clinicaId, deletedAt])
+  @@index([clinicaId, valorHash])
+  @@map("clinica_contatos")
+}
+
+// ─────────────────────────────────────────────
+// Membership (User <-> Clinica)
+// ─────────────────────────────────────────────
+
+model Membership {
+  id                     String    @id @default(uuid()) @db.Uuid
+  userId                 String    @db.Uuid
+  clinicaId              String    @db.Uuid
+  papel                  Papel
+  registroProfissional   String?   @db.VarChar(50)
+  estaAtivo              Boolean   @default(true)
+
+  createdAt              DateTime  @default(now())
+  updatedAt              DateTime  @updatedAt
+  deletedAt              DateTime?
+
+  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  clinica                Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, clinicaId])
+  @@index([clinicaId, deletedAt])
+  @@map("memberships")
+}
+
+// ─────────────────────────────────────────────
+// Convites
+// ─────────────────────────────────────────────
+
+model Convite {
+  id            String    @id @default(uuid()) @db.Uuid
+  clinicaId     String    @db.Uuid
+  enviadoPorId  String    @db.Uuid
+  emailDestino  String
+  token         String    @unique @default(uuid()) @db.Uuid
+  papel         Papel
+  expiraEm      DateTime
+  foiUsado      Boolean   @default(false)
+
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  clinica       Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+  enviadoPor    User      @relation("ConviteEnviadoPor", fields: [enviadoPorId], references: [id])
+
+  @@index([clinicaId])
+  @@index([emailDestino])
+  @@map("convites")
+}
+
+// ─────────────────────────────────────────────
+// Carteira e Transações (Créditos)
+// ─────────────────────────────────────────────
+
+model Carteira {
+  id          String      @id @default(uuid()) @db.Uuid
+  clinicaId   String      @unique @db.Uuid
+  saldo       Decimal     @default(0) @db.Decimal(12, 2)
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  clinica     Clinica     @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+  transacoes  Transacao[]
+
+  @@map("carteiras")
+}
+
+model Transacao {
+  id          String          @id @default(uuid()) @db.Uuid
+  carteiraId  String          @db.Uuid
+  userId      String          @db.Uuid
+  tipo        TipoTransacao
+  valor       Decimal         @db.Decimal(12, 2)
+  descricao   String?
+
+  createdAt   DateTime        @default(now())
+
+  carteira    Carteira        @relation(fields: [carteiraId], references: [id], onDelete: Cascade)
+  user        User            @relation(fields: [userId], references: [id])
+
+  @@index([carteiraId, createdAt])
+  @@map("transacoes")
+}
+
+model Cupom {
+  id        String     @id @default(uuid()) @db.Uuid
+  codigo    String     @unique @db.VarChar(50)
+  tipo      TipoCupom
+  valor     Decimal    @db.Decimal(12, 2)
+  ativo     Boolean    @default(true)
+  validade  DateTime?
+
+  createdAt DateTime   @default(now())
+  updatedAt DateTime   @updatedAt
+
+  @@map("cupons")
+}
+
+// ─────────────────────────────────────────────
+// Pacientes (PII criptografado)
+// ─────────────────────────────────────────────
+
+model Paciente {
+  id                       String    @id @default(uuid()) @db.Uuid
+  clinicaId                String    @db.Uuid
+  psicologoResponsavelId   String    @db.Uuid
+  nomeEncrypted            String    @db.Text
+  cpfEncrypted             String    @db.Text
+  cpfHash                  String    @db.Char(64)
+  dataNascimento           DateTime? @db.Date
+
+  createdAt                DateTime  @default(now())
+  updatedAt                DateTime  @updatedAt
+  deletedAt                DateTime?
+  createdById              String?   @db.Uuid
+  updatedById              String?   @db.Uuid
+
+  clinica                  Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
+  psicologoResponsavel     User      @relation("PacienteResponsavel", fields: [psicologoResponsavelId], references: [id])
+  enderecos                PacienteEndereco[]
+  contatos                 PacienteContato[]
+  sessoesTeste             SessaoTeste[]
+
+  @@unique([clinicaId, cpfHash])
+  @@index([clinicaId, deletedAt])
+  @@index([psicologoResponsavelId])
+  @@map("pacientes")
+}
+
+model PacienteEndereco {
+  id                    String    @id @default(uuid()) @db.Uuid
+  pacienteId            String    @db.Uuid
+  logradouroEncrypted   String    @db.Text
+  bairroEncrypted       String    @db.Text
+  complementoEncrypted  String?   @db.Text
+  cep                   String    @db.VarChar(8)
+  numero                String    @db.VarChar(20)
+  cidade                String    @db.VarChar(100)
+  estado                String    @db.Char(2)
+
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  paciente              Paciente  @relation(fields: [pacienteId], references: [id], onDelete: Cascade)
+
+  @@index([pacienteId, deletedAt])
+  @@map("paciente_enderecos")
+}
+
+model PacienteContato {
+  id              String      @id @default(uuid()) @db.Uuid
+  pacienteId      String      @db.Uuid
+  tipo            TipoContato
+  valorEncrypted  String      @db.Text
+  valorHash       String      @db.Char(64)
+
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  deletedAt       DateTime?
+
+  paciente        Paciente    @relation(fields: [pacienteId], references: [id], onDelete: Cascade)
+
+  @@index([pacienteId, deletedAt])
+  @@index([pacienteId, valorHash])
+  @@map("paciente_contatos")
+}
+
+// ─────────────────────────────────────────────
+// Testes (Catálogo global + Sessões tenant)
+// ─────────────────────────────────────────────
+
+model Teste {
+  id              String        @id @default(uuid()) @db.Uuid
+  nome            String
+  sigla           String        @unique @db.VarChar(20)
+  precoCreditos   Decimal       @db.Decimal(12, 2)
+
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+
+  sessoes         SessaoTeste[]
+
+  @@map("testes")
+}
+
+model SessaoTeste {
+  id                            String        @id @default(uuid()) @db.Uuid
+  pacienteId                    String        @db.Uuid
+  clinicaId                     String        @db.Uuid
+  psicologoId                   String        @db.Uuid
+  testeId                       String        @db.Uuid
+  status                        StatusSessao  @default(ABERTO)
+  dadosRespostas                Json?
+  resultadoCalculadoEncrypted   String?       @db.Text
+  conclusaoPsicologoEncrypted   String?       @db.Text
+  finalizadoEm                  DateTime?
+  finalizadoPorId               String?       @db.Uuid
+
+  createdAt                     DateTime      @default(now())
+  updatedAt                     DateTime      @updatedAt
+  deletedAt                     DateTime?
+  createdById                   String?       @db.Uuid
+  updatedById                   String?       @db.Uuid
+
+  paciente                      Paciente      @relation(fields: [pacienteId], references: [id])
+  clinica                       Clinica       @relation(fields: [clinicaId], references: [id])
+  psicologo                     User          @relation("SessaoAplicadaPor", fields: [psicologoId], references: [id])
+  teste                         Teste         @relation(fields: [testeId], references: [id])
+  finalizadoPor                 User?         @relation("SessaoFinalizadaPor", fields: [finalizadoPorId], references: [id])
+
+  @@index([clinicaId, deletedAt])
+  @@index([clinicaId, status])
+  @@index([psicologoId])
+  @@index([pacienteId])
+  @@map("sessoes_teste")
+}

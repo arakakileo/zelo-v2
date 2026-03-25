@@ -1,0 +1,42 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: zelo-postgres
+    environment:
+      POSTGRES_USER: zelo
+      POSTGRES_PASSWORD: zelo123
+      POSTGRES_DB: zelo_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - zelo_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zelo -d zelo_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: ../../
+      dockerfile: infra/docker/api.Dockerfile
+    container_name: zelo-api
+    ports:
+      - "3000:3000"
+    environment:
+      NODE_ENV: development
+      DATABASE_URL: postgresql://zelo:zelo123@postgres:5432/zelo_db?schema=public
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-REPLACE_WITH_32_BYTE_BASE64_KEY}
+      BLIND_INDEX_PEPPER: ${BLIND_INDEX_PEPPER:-change_this_pepper_min_8_chars}
+      JWT_SECRET: ${JWT_SECRET:-change_this_jwt_secret_min_16}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:-change_this_refresh_secret_min_16}
+      PORT: 3000
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ../../apps/api/src:/app/apps/api/src:ro
+      - ../../packages:/app/packages:ro
+
+volumes:
+  zelo_pgdata:
