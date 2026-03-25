@@ -9,6 +9,7 @@ import { ClinicasModule } from './modules/clinicas/clinicas.module';
 import { ConvitesModule } from './modules/convites/convites.module';
 import { PacientesModule } from './modules/pacientes/pacientes.module';
 import { TestesModule } from './modules/testes/testes.module';
+import { CarteiraModule } from './modules/carteira/carteira.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { TestesModule } from './modules/testes/testes.module';
     ConvitesModule,
     PacientesModule,
     TestesModule,
+    CarteiraModule,
   ],
   providers: [
     {
