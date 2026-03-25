@@ -5,6 +5,8 @@ import { PrismaModule } from './common/prisma/prisma.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
+import { ClinicasModule } from './modules/clinicas/clinicas.module';
+import { ConvitesModule } from './modules/convites/convites.module';
 
 @Module({
   imports: [
@@ -15,6 +17,8 @@ import { AuthModule } from './modules/auth/auth.module';
     PrismaModule,
     HealthModule,
     AuthModule,
+    ClinicasModule,
+    ConvitesModule,
   ],
   providers: [
     {
