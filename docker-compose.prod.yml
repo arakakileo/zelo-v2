@@ -1,0 +1,87 @@
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: zelo-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: zelo
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+      POSTGRES_DB: zelo_db
+    volumes:
+      - zelo_pgdata:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:5435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U zelo -d zelo_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    container_name: zelo-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: postgresql://zelo:${DB_PASSWORD}@db:5432/zelo_db?schema=public
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY}
+      BLIND_INDEX_PEPPER: ${BLIND_INDEX_PEPPER}
+      JWT_SECRET: ${JWT_SECRET}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
+      PORT: 3000
+    networks:
+      - default
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.zelo-api.rule=Host(`api.zelo.arakakileo.com`)"
+      - "traefik.http.routers.zelo-api.entrypoints=websecure"
+      - "traefik.http.routers.zelo-api.tls.certresolver=letsencrypt"
+      - "traefik.http.services.zelo-api.loadbalancer.server.port=3000"
+      - "traefik.docker.network=traefik-public"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        NEXT_PUBLIC_API_URL: https://api.zelo.arakakileo.com
+    container_name: zelo-web
+    restart: unless-stopped
+    depends_on:
+      api:
+        condition: service_healthy
+    environment:
+      HOSTNAME: "0.0.0.0"
+    networks:
+      - default
+      - traefik-public
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.zelo-web.rule=Host(`zelo.arakakileo.com`)"
+      - "traefik.http.routers.zelo-web.entrypoints=websecure"
+      - "traefik.http.routers.zelo-web.tls.certresolver=letsencrypt"
+      - "traefik.http.services.zelo-web.loadbalancer.server.port=3000"
+      - "traefik.docker.network=traefik-public"
+    healthcheck:
+      test: ["CMD", "wget", "--spider", "-q", "http://localhost:3000"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  traefik-public:
+    external: true
+
+volumes:
+  zelo_pgdata:
