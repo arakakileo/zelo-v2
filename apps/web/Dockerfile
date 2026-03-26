@@ -17,6 +17,7 @@ COPY packages/contracts ./packages/contracts
 COPY apps/web ./apps/web
 ARG NEXT_PUBLIC_API_URL
 ENV NEXT_PUBLIC_API_URL=$NEXT_PUBLIC_API_URL
+ENV NEXT_STANDALONE=true
 RUN pnpm --filter @zelo/contracts build
 RUN pnpm --filter @zelo/web build
 
