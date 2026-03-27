@@ -39,7 +39,7 @@ services:
       - traefik-public
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.zelo-api.rule=Host(`api.zelo.arakakileo.com`)"
+      - "traefik.http.routers.zelo-api.rule=Host(`api-zelo.arakakileo.com`)"
       - "traefik.http.routers.zelo-api.entrypoints=websecure"
       - "traefik.http.routers.zelo-api.tls.certresolver=letsencrypt"
       - "traefik.http.services.zelo-api.loadbalancer.server.port=3000"
@@ -55,7 +55,7 @@ services:
       context: .
       dockerfile: apps/web/Dockerfile
       args:
-        NEXT_PUBLIC_API_URL: https://api.zelo.arakakileo.com
+        NEXT_PUBLIC_API_URL: https://api-zelo.arakakileo.com
     container_name: zelo-web
     restart: unless-stopped
     depends_on:
