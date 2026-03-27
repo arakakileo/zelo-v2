@@ -141,6 +141,7 @@ export default function DashboardPage() {
             {clinicas.map((m) => (
               <div
                 key={m.membershipId}
+                onClick={() => router.push(`/clinica/${m.clinica.id}`)}
                 className="bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl p-5 hover:bg-white/[0.08] hover:border-white/20 transition-all duration-200 cursor-pointer group"
               >
                 <div className="flex items-center justify-between">
