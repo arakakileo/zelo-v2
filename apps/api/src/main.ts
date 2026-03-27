@@ -6,6 +6,15 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
+  app.enableCors({
+    origin: [
+      'https://zelo.arakakileo.com',
+      'http://localhost:3000',
+      'http://localhost:3001',
+    ],
+    credentials: true,
+  });
+
   // Global validation pipe — strips unknown fields, transforms types
   app.useGlobalPipes(
     new ValidationPipe({
