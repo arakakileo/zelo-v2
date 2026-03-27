@@ -1,5 +1,6 @@
 import { PrismaClient } from '@prisma/client';
 import { createHash, randomBytes } from 'node:crypto';
+import { CryptoService, BlindIndexService } from '@zelo/crypto';
 
 const prisma = new PrismaClient();
 
@@ -9,14 +10,14 @@ function hashPassword(password: string): string {
   return `${salt}:${hash}`;
 }
 
-// Fake encryption (seed data only — not real AES-256-GCM)
-function fakeEncrypt(value: string): string {
-  return Buffer.from(JSON.stringify({ v: 0, seed: true, plain: value })).toString('base64');
+function getRequiredEnv(name: string): string {
+  const value = process.env[name];
+  if (!value) throw new Error(`Missing required env var: ${name}`);
+  return value;
 }
 
-function fakeBlindIndex(value: string): string {
-  return createHash('sha256').update(value + 'seed-pepper').digest('hex');
-}
+const crypto = new CryptoService(getRequiredEnv('ENCRYPTION_KEY'));
+const blindIndex = new BlindIndexService(getRequiredEnv('BLIND_INDEX_PEPPER'));
 
 async function main() {
   console.log('🌱 Seeding database...');
@@ -29,8 +30,8 @@ async function main() {
       email: 'admin@zelo.dev',
       senhaHash: hashPassword('Admin123'),
       nomeCompleto: 'Admin Dev',
-      cpfEncrypted: fakeEncrypt('11111111111'),
-      cpfHash: fakeBlindIndex('11111111111'),
+      cpfEncrypted: crypto.encrypt('11111111111'),
+      cpfHash: blindIndex.hashCpf('11111111111'),
     },
   });
   console.log(`  ✅ User admin: ${admin.id}`);
@@ -43,21 +44,21 @@ async function main() {
       email: 'psicologo@zelo.dev',
       senhaHash: hashPassword('Psico123'),
       nomeCompleto: 'Dr. João Silva',
-      cpfEncrypted: fakeEncrypt('22222222222'),
-      cpfHash: fakeBlindIndex('22222222222'),
+      cpfEncrypted: crypto.encrypt('22222222222'),
+      cpfHash: blindIndex.hashCpf('22222222222'),
     },
   });
   console.log(`  ✅ User psicólogo: ${psicologo.id}`);
 
   // 3. Clínica
   const clinica = await prisma.clinica.upsert({
-    where: { cnpjCpfHash: fakeBlindIndex('12345678000190') },
+    where: { cnpjCpfHash: blindIndex.hashCnpjCpf('12345678000190') },
     update: {},
     create: {
       razaoSocial: 'Clínica Mente Sã LTDA',
       nomeFantasia: 'Mente Sã',
-      cnpjCpfEncrypted: fakeEncrypt('12345678000190'),
-      cnpjCpfHash: fakeBlindIndex('12345678000190'),
+      cnpjCpfEncrypted: crypto.encrypt('12345678000190'),
+      cnpjCpfHash: blindIndex.hashCnpjCpf('12345678000190'),
     },
   });
   console.log(`  ✅ Clínica: ${clinica.id}`);
@@ -121,9 +122,9 @@ async function main() {
     data: {
       clinicaId: clinica.id,
       psicologoResponsavelId: psicologo.id,
-      nomeEncrypted: fakeEncrypt('Maria das Graças'),
-      cpfEncrypted: fakeEncrypt('33333333333'),
-      cpfHash: fakeBlindIndex('33333333333'),
+      nomeEncrypted: crypto.encrypt('Maria das Graças'),
+      cpfEncrypted: crypto.encrypt('33333333333'),
+      cpfHash: blindIndex.hashCpf('33333333333'),
       dataNascimento: new Date('1990-05-15'),
       createdById: psicologo.id,
     },
