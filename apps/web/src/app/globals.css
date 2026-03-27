@@ -1,1 +1,49 @@
 @import "tailwindcss";
+
+:root {
+  color-scheme: dark;
+  --background: #060816;
+  --surface: rgba(11, 16, 32, 0.72);
+  --surface-strong: rgba(16, 22, 43, 0.9);
+  --foreground: #f5f7ff;
+  --muted: rgba(226, 232, 255, 0.68);
+  --border: rgba(255, 255, 255, 0.12);
+}
+
+html {
+  background:
+    radial-gradient(circle at top, rgba(109, 40, 217, 0.22), transparent 32%),
+    radial-gradient(circle at 80% 20%, rgba(59, 130, 246, 0.18), transparent 28%),
+    linear-gradient(180deg, #0a0f1f 0%, #060816 100%);
+  min-height: 100%;
+}
+
+body {
+  min-height: 100vh;
+  color: var(--foreground);
+  background: transparent;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+* {
+  scrollbar-color: rgba(139, 92, 246, 0.45) rgba(255, 255, 255, 0.04);
+}
+
+::selection {
+  background: rgba(139, 92, 246, 0.35);
+  color: white;
+}
+
+input,
+button,
+textarea,
+select {
+  font: inherit;
+}
+
+@supports (-webkit-touch-callout: none) {
+  body {
+    min-height: -webkit-fill-available;
+  }
+}
