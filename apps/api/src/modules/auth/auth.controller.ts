@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import type { Request } from 'express';
 import { AuthService } from './auth.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
@@ -17,6 +18,19 @@ import { LoginDto } from './dto/login.dto';
 interface JwtUser {
   id: string;
   email: string;
+}
+
+/**
+ * Extracts the raw Bearer token from the Authorization header.
+ * Used by refresh and logout endpoints that receive a refresh token.
+ */
+function extractBearerToken(req: Request): string {
+  const authHeader = req.headers['authorization'];
+  if (!authHeader || typeof authHeader !== 'string') {
+    return '';
+  }
+  const match = authHeader.match(/^Bearer\s+(.+)$/i);
+  return match ? match[1]! : '';
 }
 
 @ApiTags('auth')
@@ -47,13 +61,21 @@ export class AuthController {
 
   @Post('refresh')
   @HttpCode(HttpStatus.OK)
-  @UseGuards(AuthGuard('jwt-refresh'))
-  @ApiBearerAuth()
   @ApiOperation({ summary: 'Renovar access token usando refresh token' })
-  @ApiResponse({ status: 200, description: 'Tokens renovados' })
-  @ApiResponse({ status: 401, description: 'Refresh token inválido' })
-  async refresh(@Req() req: { user: JwtUser }) {
-    return this.authService.refreshTokens(req.user.id, req.user.email);
+  @ApiResponse({ status: 200, description: 'Tokens renovados (rotação)' })
+  @ApiResponse({ status: 401, description: 'Refresh token inválido ou revogado' })
+  async refresh(@Req() req: Request) {
+    const refreshToken = extractBearerToken(req);
+    return this.authService.refreshTokens(refreshToken);
+  }
+
+  @Post('logout')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revogar refresh token (logout)' })
+  @ApiResponse({ status: 200, description: 'Logout realizado' })
+  async logout(@Req() req: Request) {
+    const refreshToken = extractBearerToken(req);
+    return this.authService.logout(refreshToken);
   }
 
   @Get('me')

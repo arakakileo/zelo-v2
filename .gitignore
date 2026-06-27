@@ -11,3 +11,4 @@ prisma/generated
 *.log
 .DS_Store
 Thumbs.db
+tsconfig.tsbuildinfo

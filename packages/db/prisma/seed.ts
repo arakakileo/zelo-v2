@@ -1,13 +1,11 @@
 import { PrismaClient } from '@prisma/client';
-import { createHash, randomBytes } from 'node:crypto';
+import * as argon2 from 'argon2';
 import { CryptoService, BlindIndexService } from '@zelo/crypto';
 
 const prisma = new PrismaClient();
 
-function hashPassword(password: string): string {
-  const salt = randomBytes(16).toString('hex');
-  const hash = createHash('sha256').update(salt + password).digest('hex');
-  return `${salt}:${hash}`;
+function hashPassword(password: string): Promise<string> {
+  return argon2.hash(password, { type: argon2.argon2id });
 }
 
 function getRequiredEnv(name: string): string {
@@ -28,7 +26,7 @@ async function main() {
     update: {},
     create: {
       email: 'admin@zelo.dev',
-      senhaHash: hashPassword('Admin123'),
+      senhaHash: await hashPassword('Admin123'),
       nomeCompleto: 'Admin Dev',
       cpfEncrypted: crypto.encrypt('11111111111'),
       cpfHash: blindIndex.hashCpf('11111111111'),
@@ -42,7 +40,7 @@ async function main() {
     update: {},
     create: {
       email: 'psicologo@zelo.dev',
-      senhaHash: hashPassword('Psico123'),
+      senhaHash: await hashPassword('Psico123'),
       nomeCompleto: 'Dr. João Silva',
       cpfEncrypted: crypto.encrypt('22222222222'),
       cpfHash: blindIndex.hashCpf('22222222222'),

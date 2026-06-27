@@ -79,7 +79,7 @@ export class ConvitesService {
       },
     });
 
-    this.logger.log(`Convite criado: ${convite.id} para ${convite.emailDestino}`);
+    this.logger.log(`Convite criado: ${convite.id}`);
 
     return convite;
   }

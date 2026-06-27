@@ -91,7 +91,13 @@ Frontend disponível em `http://localhost:3001`
 ## Testes
 
 ```bash
-# Testes do pacote crypto
+# Todos os testes (API + crypto + demais pacotes)
+pnpm test
+
+# Apenas API (77 testes: auth, clinicas, carteira, pacientes, sessoes, tenancy)
+pnpm --filter @zelo/api test
+
+# Apenas crypto
 pnpm --filter @zelo/crypto test
 
 # Typecheck de todos os pacotes
@@ -129,6 +135,16 @@ PII é criptografado com AES-256-GCM antes de persistir. Campos de busca (CPF, e
 - `CryptoService`: encrypt/decrypt com envelope versionado
 - `BlindIndexService`: hash determinístico para busca
 
+## Autenticação
+
+- **Password hashing**: argon2id (OWASP recommended) via `PasswordService`.
+  Hashes legacy SHA-256+salt são detectados e transparentemente
+  re-hasheados para argon2id no próximo login.
+- **Tokens**: access JWT (30m) + refresh JWT (7d) com rotação.
+  Refresh tokens são armazenados apenas como hash SHA-256 no DB.
+  Reúso de token revogado revoga toda a família (detecção de roubo).
+- **Logout**: revoga o refresh token específico ou a família inteira.
+
 ---
 
-**Status**: Slice 0 completo. Próximos passos: Slice 1 (Auth).
+**Status**: Auth + Clinicas + Convites + Pacientes + Carteira + Testes (sessões) + Web implementados. Senhas com argon2id + refresh token rotation. 77 testes automatizados cobrindo happy path + edge cases de segurança.

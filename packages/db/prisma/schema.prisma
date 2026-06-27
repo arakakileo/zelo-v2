@@ -73,9 +73,38 @@ model User {
   pacientes         Paciente[]        @relation("PacienteResponsavel")
   sessoesAplicadas  SessaoTeste[]     @relation("SessaoAplicadaPor")
   sessoesFinalizadas SessaoTeste[]    @relation("SessaoFinalizadaPor")
+  refreshTokens     RefreshToken[]
 
   @@index([deletedAt])
   @@map("users")
+}
+
+/// Tracks issued refresh tokens for rotation + revocation (logout / reuse detection).
+/// Each login starts a new "family". On refresh, the old token is revoked and a new
+/// token in the same family is issued. If a revoked token is reused, the entire
+/// family is revoked (compromise detection).
+model RefreshToken {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @db.Uuid
+  /// Random token identifier embedded in the JWT (jti claim).
+  jti         String   @unique @db.VarChar(64)
+  /// Groups tokens from the same login session. Revoking a family invalidates
+  /// all tokens in it (used on reuse-detection or password change).
+  familyId    String   @db.VarChar(64)
+  /// SHA-256 hash of the raw refresh token for safe DB lookup.
+  tokenHash   String   @unique @db.Char(64)
+  revoked     Boolean  @default(false)
+  replacedById String? @db.Uuid
+  expiresAt   DateTime
+  createdAt   DateTime @default(now())
+
+  user         User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  replacedBy   RefreshToken? @relation("RefreshTokenReplacedBy", fields: [replacedById], references: [id])
+  replacedByTokens RefreshToken[] @relation("RefreshTokenReplacedBy")
+
+  @@index([userId, familyId])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
 }
 
 model UserEndereco {
