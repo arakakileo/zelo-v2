@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [master, main]
   pull_request:
-    branches: [main]
+    branches: [master, main]
 
 jobs:
   build:
@@ -52,7 +52,18 @@ jobs:
 
       - name: Run tests (crypto)
         env:
-          # Dummy keys for CI testing
+          # Dummy keys for CI testing — no real secrets
           ENCRYPTION_KEY: dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy1sb25n
           BLIND_INDEX_PEPPER: test-pepper-for-ci-testing-min-8-chars
         run: pnpm --filter @zelo/crypto test
+
+      - name: Run tests (api)
+        env:
+          ENCRYPTION_KEY: dGVzdC1lbmNyeXB0aW9uLWtleS0zMi1ieXRlcy1sb25n
+          BLIND_INDEX_PEPPER: test-pepper-for-ci-testing-min-8-chars
+          JWT_SECRET: ci-jwt-secret-not-real
+          JWT_REFRESH_SECRET: ci-jwt-refresh-secret-not-real
+        run: pnpm --filter @zelo/api test
+
+      - name: Run lint
+        run: pnpm lint
