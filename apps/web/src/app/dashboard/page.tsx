@@ -1,8 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { api } from '@/lib/api';
+import { buttonPrimaryClass, clearAuth, getStoredToken, glassCard, inputClass } from '@/lib/clinic';
 
 interface Clinica {
   id: string;
@@ -28,26 +29,51 @@ export default function DashboardPage() {
   const [clinicas, setClinicas] = useState<Membership[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
+  const [inviteToken, setInviteToken] = useState('');
+  const [accepting, setAccepting] = useState(false);
+  const [acceptError, setAcceptError] = useState('');
+  const [acceptSuccess, setAcceptSuccess] = useState('');
 
-  useEffect(() => {
-    const token = localStorage.getItem('accessToken');
-    if (!token) { router.push('/login'); return; }
-
-    Promise.all([
+  const loadData = (token: string) => {
+    return Promise.all([
       api<UserProfile>('/auth/me', { token }),
       api<Membership[]>('/clinicas', { token }),
     ])
       .then(([userData, clinicasData]) => { setUser(userData); setClinicas(clinicasData); })
       .catch((err) => {
         if (err instanceof Error && err.message.includes('401')) {
-          localStorage.removeItem('accessToken');
+          clearAuth();
           router.push('/login');
           return;
         }
         setError(err instanceof Error ? err.message : 'Erro ao carregar dados');
-      })
-      .finally(() => setLoading(false));
+      });
+  };
+
+  useEffect(() => {
+    const token = getStoredToken();
+    if (!token) { router.push('/login'); return; }
+    loadData(token).finally(() => setLoading(false));
   }, [router]);
+
+  async function handleAcceptInvite(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const token = getStoredToken();
+    if (!token) return;
+    setAccepting(true);
+    setAcceptError('');
+    setAcceptSuccess('');
+    try {
+      await api('/convites/aceitar', { token, method: 'POST', body: JSON.stringify({ token: inviteToken.trim() }) });
+      setAcceptSuccess('Convite aceito com sucesso!');
+      setInviteToken('');
+      await loadData(token);
+    } catch (err) {
+      setAcceptError(err instanceof Error ? err.message : 'Erro ao aceitar convite');
+    } finally {
+      setAccepting(false);
+    }
+  }
 
   function handleLogout() {
     localStorage.removeItem('accessToken');
@@ -123,6 +149,28 @@ export default function DashboardPage() {
             {error}
           </div>
         )}
+
+        {/* Invite acceptance */}
+        <div className="mb-10">
+          <form onSubmit={handleAcceptInvite} className={glassCard + ' p-5'}>
+            <p className="text-sm text-white/40">Possui um código de convite?</p>
+            <h3 className="mt-1 text-base font-semibold text-white">Aceitar convite</h3>
+            <div className="mt-4 flex flex-col gap-3 sm:flex-row">
+              <input
+                className={inputClass}
+                placeholder="Cole aqui o token do convite"
+                value={inviteToken}
+                onChange={(e) => setInviteToken(e.target.value)}
+                required
+              />
+              <button type="submit" disabled={accepting} className={buttonPrimaryClass + ' sm:w-auto whitespace-nowrap'}>
+                {accepting ? 'Aceitando...' : 'Aceitar convite'}
+              </button>
+            </div>
+            {acceptError && <p className="mt-3 text-sm text-red-400">{acceptError}</p>}
+            {acceptSuccess && <p className="mt-3 text-sm text-emerald-400">{acceptSuccess}</p>}
+          </form>
+        </div>
 
         {/* Clinics section */}
         <div className="mb-4 flex items-center justify-between">

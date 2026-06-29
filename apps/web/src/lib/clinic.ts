@@ -41,19 +41,43 @@ export interface PacienteResumo {
   } | null;
 }
 
-export interface PacienteDetalhe extends PacienteResumo {
-  contatos: Array<{
-    id: string;
-    tipo: string;
-    valor: string;
-  }>;
+export interface PacienteContato {
+  id: string;
+  tipo: string;
+  valor: string;
 }
+
+export interface PacienteEndereco {
+  id: string;
+  logradouro: string;
+  bairro: string;
+  complemento: string | null;
+  cep: string;
+  numero: string;
+  cidade: string;
+  estado: string;
+}
+
+export interface PacienteDetalhe extends PacienteResumo {
+  contatos: PacienteContato[];
+  enderecos: PacienteEndereco[];
+}
+
+export type StatusSessao = 'ABERTO' | 'FINALIZADO' | 'CANCELADO' | 'BLOQUEADO_REGRA';
+
+export type MotorStatus =
+  | 'OK'
+  | 'DEMO'
+  | 'BLOQUEADO_REGRAS_INDISPONIVEIS'
+  | 'BLOQUEADO_CATALOGO_INDISPONIVEL';
 
 export interface SessaoResumo {
   id: string;
-  status: 'ABERTO' | 'FINALIZADO' | 'CANCELADO';
+  status: StatusSessao;
+  motorStatus: MotorStatus | null;
   createdAt: string;
   teste: string;
+  pacienteId: string;
   pacienteNome: string;
   psicologoNome: string;
 }
@@ -171,6 +195,100 @@ export function maskEmail(email: string) {
   if (!name || !domain) return '—';
   if (name.length <= 2) return `${name[0] ?? '*'}***@${domain}`;
   return `${name.slice(0, 2)}${'*'.repeat(Math.max(2, name.length - 2))}@${domain}`;
+}
+
+export interface RelatorioSessao {
+  id: string;
+  status: StatusSessao;
+  teste: { sigla: string; nome: string };
+  paciente: { id: string; nome: string };
+  psicologo: { nome: string; registro: string | null };
+  dadosRespostas: Record<string, unknown> | null;
+  resultadoClinico: {
+    score: number | null;
+    banda: string | null;
+    versaoMotor: string;
+    versaoRegra: string | null;
+    observacao: string;
+  } | null;
+  conclusaoPsicologo: string | null;
+  finalizadoEm: string | null;
+  motor: {
+    versao: string | null;
+    versaoRegra: string | null;
+    status: MotorStatus | null;
+    score: number | null;
+    banda: string | null;
+    hashRespostas: string | null;
+    itensInvalidos: unknown;
+    observacao: string | null;
+  };
+  estorno: {
+    em: string;
+    valor: number | string;
+    motivo: string;
+  } | null;
+}
+
+export interface ConviteDetalhe extends ConviteClinica {
+  expirado: boolean;
+}
+
+/**
+ * Determina se um convite está expirado (não usado e data de expiração no passado).
+ */
+export function isConviteExpirado(convite: { foiUsado: boolean; expiraEm: string }): boolean {
+  return !convite.foiUsado && new Date(convite.expiraEm) < new Date();
+}
+
+/**
+ * Rótulo legível para o status da sessão.
+ * BLOQUEADO_REGRA é destacado como estado terminal não-clínico.
+ */
+export function statusSessaoLabel(status: StatusSessao): string {
+  switch (status) {
+    case 'ABERTO':
+      return 'Aberta';
+    case 'FINALIZADO':
+      return 'Finalizada';
+    case 'CANCELADO':
+      return 'Cancelada';
+    case 'BLOQUEADO_REGRA':
+      return 'Bloqueada';
+    default:
+      return status;
+  }
+}
+
+/**
+ * Rótulo legível e classe CSS para o status do motor de scoring.
+ *
+ * Compliance SATEPSI: status DEMO e BLOQUEADO_* NUNCA devem ser apresentados
+ * como resultado clínico real. O label deixa claro que são estados
+ * não-clínicos / bloqueados.
+ */
+export function motorStatusLabel(status: MotorStatus | null): string {
+  switch (status) {
+    case 'OK':
+      return 'Resultado clínico';
+    case 'DEMO':
+      return 'Demo (não-clínico)';
+    case 'BLOQUEADO_REGRAS_INDISPONIVEIS':
+      return 'Bloqueado — regra indisponível';
+    case 'BLOQUEADO_CATALOGO_INDISPONIVEL':
+      return 'Bloqueado — catálogo indisponível';
+    default:
+      return '—';
+  }
+}
+
+/**
+ * Indica se o status do motor representa um resultado clínico válido.
+ * Apenas OK conta — DEMO é adapter não-clínico, os demais são bloqueios.
+ * Usado para decidir se a UI pode exibir score/banda como resultado clínico.
+ */
+export function isResultadoClinico(status: MotorStatus | null): boolean {
+  return status === 'OK';
 }
 
 export const glassCard = 'bg-white/5 backdrop-blur-xl border border-white/10 rounded-2xl';

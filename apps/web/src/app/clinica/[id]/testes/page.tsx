@@ -1,5 +1,6 @@
 'use client';
 
+import Link from 'next/link';
 import { useRouter } from 'next/navigation';
 import { useEffect, useState, type FormEvent } from 'react';
 import {
@@ -11,7 +12,9 @@ import {
   formatDateTime,
   glassCard,
   inputClass,
+  motorStatusLabel,
   safeApi,
+  statusSessaoLabel,
   useRequireAuth,
 } from '@/lib/clinic';
 import { useClinicContext } from '../clinic-context';
@@ -99,19 +102,25 @@ export default function TestesPage() {
         <div className={glassCard + ' p-6'}>
           <p className="text-sm text-white/40">Catálogo</p>
           <div className="mt-4 space-y-3">
-            {testes.map((teste) => (
-              <div key={teste.id} className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <p className="font-medium text-white">{teste.nome}</p>
-                    <p className="mt-1 text-sm text-white/45">{teste.sigla}</p>
+            {loading ? (
+              <p className="text-sm text-white/40">Carregando catálogo...</p>
+            ) : testes.length === 0 ? (
+              <p className="text-sm text-white/40">Nenhum teste disponível no catálogo.</p>
+            ) : (
+              testes.map((teste) => (
+                <div key={teste.id} className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="font-medium text-white">{teste.nome}</p>
+                      <p className="mt-1 text-sm text-white/45">{teste.sigla}</p>
+                    </div>
+                    <span className="rounded-full border border-violet-500/20 bg-violet-600/10 px-3 py-1 text-xs text-violet-200">
+                      {formatCredits(teste.precoCreditos)} créditos
+                    </span>
                   </div>
-                  <span className="rounded-full border border-violet-500/20 bg-violet-600/10 px-3 py-1 text-xs text-violet-200">
-                    {formatCredits(teste.precoCreditos)} créditos
-                  </span>
                 </div>
-              </div>
-            ))}
+              ))
+            )}
           </div>
         </div>
       </div>
@@ -132,17 +141,28 @@ export default function TestesPage() {
         ) : (
           <div className="mt-5 space-y-3">
             {sessoes.map((sessao) => (
-              <div key={sessao.id} className="rounded-2xl border border-white/10 bg-white/5 p-4">
+              <Link
+                key={sessao.id}
+                href={`/clinica/${clinicaId}/sessoes/${sessao.id}`}
+                className="block rounded-2xl border border-white/10 bg-white/5 p-4 transition-all duration-200 hover:border-white/20 hover:bg-white/[0.08]"
+              >
                 <div className="flex items-start justify-between gap-3">
                   <div>
                     <p className="font-medium text-white">{sessao.teste}</p>
                     <p className="mt-1 text-sm text-white/45">{sessao.pacienteNome}</p>
                     <p className="mt-1 text-sm text-white/35">Psicólogo: {sessao.psicologoNome}</p>
                   </div>
-                  <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/60">{sessao.status}</span>
+                  <div className="flex flex-col items-end gap-1">
+                    <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/60">
+                      {statusSessaoLabel(sessao.status)}
+                    </span>
+                    {sessao.motorStatus && sessao.status !== 'ABERTO' && (
+                      <span className="text-xs text-white/35">{motorStatusLabel(sessao.motorStatus)}</span>
+                    )}
+                  </div>
                 </div>
                 <p className="mt-2 text-xs text-white/30">{formatDateTime(sessao.createdAt)}</p>
-              </div>
+              </Link>
             ))}
           </div>
         )}

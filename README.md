@@ -94,7 +94,7 @@ Frontend disponível em `http://localhost:3001`
 # Todos os testes (API + crypto + demais pacotes)
 pnpm test
 
-# Apenas API (77 testes: auth, clinicas, carteira, pacientes, sessoes, tenancy)
+# Apenas API (146 testes: auth, clinicas, carteira, pacientes, sessoes, scoring, tenancy)
 pnpm --filter @zelo/api test
 
 # Apenas crypto
@@ -147,4 +147,4 @@ PII é criptografado com AES-256-GCM antes de persistir. Campos de busca (CPF, e
 
 ---
 
-**Status**: Auth + Clinicas + Convites + Pacientes + Carteira + Testes (sessões) + Web implementados. Senhas com argon2id + refresh token rotation. 77 testes automatizados cobrindo happy path + edge cases de segurança.
+**Status**: Auth + Clinicas + Convites + Pacientes (CRUD + contatos + endereços + busca CPF) + Carteira (carga + cupom uso único) + Testes (sessões com motor SATEPSI fail-closed + estorno) + Web implementados. Senhas com argon2id + refresh token rotation. Motor de scoring SATEPSI v0.2.0: BDI-II é adapter **DEMO** (não-clínico, sem licença) — todas as sessões são fail-closed (bloqueadas + estornadas) até que uma regra PRODUCAO licenciada exista. 146+ testes automatizados cobrindo happy path + edge cases de segurança + compliance.
