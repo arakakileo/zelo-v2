@@ -44,10 +44,13 @@ jobs:
       - name: Generate Prisma Client
         run: pnpm --filter @zelo/db db:generate
 
+      - name: Build internal packages
+        run: pnpm --filter @zelo/contracts --filter @zelo/crypto --filter @zelo/db --filter @zelo/config build
+
       - name: Typecheck all packages
         run: pnpm typecheck
 
-      - name: Build packages
+      - name: Build app packages
         run: pnpm build
 
       - name: Run tests (crypto)
