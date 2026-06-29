@@ -169,4 +169,31 @@ export class ClinicasService {
       papelAtivo: membership.papel,
     };
   }
+
+  /**
+   * Listar equipe (memberships ativos) de uma clínica.
+   * Requer membership ativo do caller — sem leak de PII (cpf nunca exposto).
+   */
+  async listarEquipe(userId: string, clinicaId: string) {
+    const membership = await this.prisma.membership.findFirst({
+      where: { userId, clinicaId, estaAtivo: true, deletedAt: null },
+      select: { id: true },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException('Sem acesso a esta clínica');
+    }
+
+    return this.prisma.membership.findMany({
+      where: { clinicaId, estaAtivo: true, deletedAt: null },
+      select: {
+        id: true,
+        papel: true,
+        registroProfissional: true,
+        estaAtivo: true,
+        user: { select: { id: true, nomeCompleto: true, email: true } },
+      },
+      orderBy: { createdAt: 'asc' },
+    });
+  }
 }

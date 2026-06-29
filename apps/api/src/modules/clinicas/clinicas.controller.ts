@@ -40,6 +40,14 @@ export class ClinicasController {
     return this.clinicasService.listarMinhasClinicas(req.user.id);
   }
 
+  @Get(':id/equipe')
+  @ApiOperation({ summary: 'Listar equipe da clínica (memberships ativos)' })
+  @ApiResponse({ status: 200, description: 'Lista de membros da equipe' })
+  @ApiResponse({ status: 403, description: 'Sem acesso' })
+  async equipe(@Req() req: { user: JwtUser }, @Param('id') id: string) {
+    return this.clinicasService.listarEquipe(req.user.id, id);
+  }
+
   @Get(':id')
   @ApiOperation({ summary: 'Obter detalhes de uma clínica' })
   @ApiResponse({ status: 200, description: 'Detalhes da clínica' })

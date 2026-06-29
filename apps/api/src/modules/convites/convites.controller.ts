@@ -1,7 +1,11 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
+  HttpCode,
+  HttpStatus,
+  Param,
   Post,
   Query,
   Req,
@@ -42,12 +46,32 @@ export class ConvitesController {
   @Get()
   @ApiOperation({ summary: 'Listar convites da clínica (ADMIN only)' })
   @ApiQuery({ name: 'clinicaId', description: 'ID da clínica' })
+  @ApiQuery({
+    name: 'status',
+    required: false,
+    enum: ['pendente', 'usado', 'expirado', 'todos'],
+    description: 'Filtro de status (default: pendente)',
+  })
   @ApiResponse({ status: 200, description: 'Lista de convites' })
   async listar(
     @Req() req: { user: JwtUser },
     @Query('clinicaId') clinicaId: string,
+    @Query('status') status?: string,
   ) {
-    return this.convitesService.listarConvites(req.user.id, clinicaId);
+    return this.convitesService.listarConvites(req.user.id, clinicaId, status);
+  }
+
+  @Delete(':id')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Revogar convite pendente (ADMIN only)' })
+  @ApiResponse({ status: 200, description: 'Convite revogado' })
+  @ApiResponse({ status: 403, description: 'Apenas ADMIN' })
+  @ApiResponse({ status: 404, description: 'Convite não encontrado' })
+  async revogar(
+    @Req() req: { user: JwtUser },
+    @Param('id') id: string,
+  ) {
+    return this.convitesService.revogarConvite(req.user.id, id);
   }
 
   @Post('aceitar')

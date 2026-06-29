@@ -85,10 +85,12 @@ export class ConvitesService {
   }
 
   /**
-   * Listar convites de uma clínica.
+   * Listar convites de uma clínica com filtro opcional de status.
    * Apenas ADMIN pode ver.
+   *
+   * status: 'pendente' (default) | 'usado' | 'expirado' | 'todos'
    */
-  async listarConvites(userId: string, clinicaId: string) {
+  async listarConvites(userId: string, clinicaId: string, status?: string) {
     const membership = await this.prisma.membership.findFirst({
       where: { userId, clinicaId, papel: 'ADMIN', estaAtivo: true, deletedAt: null },
     });
@@ -97,8 +99,27 @@ export class ConvitesService {
       throw new ForbiddenException('Apenas ADMIN pode ver convites');
     }
 
+    const now = new Date();
+    let where: Record<string, unknown> = { clinicaId };
+
+    switch (status) {
+      case 'usado':
+        where = { clinicaId, foiUsado: true };
+        break;
+      case 'expirado':
+        where = { clinicaId, foiUsado: false, expiraEm: { lt: now } };
+        break;
+      case 'todos':
+        // no filter
+        break;
+      case 'pendente':
+      default:
+        where = { clinicaId, foiUsado: false, expiraEm: { gt: now } };
+        break;
+    }
+
     return this.prisma.convite.findMany({
-      where: { clinicaId },
+      where,
       select: {
         id: true,
         emailDestino: true,
@@ -189,5 +210,41 @@ export class ConvitesService {
       mensagem: 'Convite aceito com sucesso',
       membership: result,
     };
+  }
+
+  /**
+   * Revogar (cancelar) um convite pendente.
+   * Apenas ADMIN da clínica do convite pode revogar.
+   * Define expiraEm = now() para invalidar sem mudar schema.
+   */
+  async revogarConvite(userId: string, conviteId: string) {
+    const convite = await this.prisma.convite.findUnique({
+      where: { id: conviteId },
+      select: { id: true, clinicaId: true, foiUsado: true },
+    });
+
+    if (!convite) {
+      throw new NotFoundException('Convite não encontrado');
+    }
+
+    const membership = await this.prisma.membership.findFirst({
+      where: { userId, clinicaId: convite.clinicaId, papel: 'ADMIN', estaAtivo: true, deletedAt: null },
+    });
+
+    if (!membership) {
+      throw new ForbiddenException('Apenas ADMIN pode revogar convites');
+    }
+
+    if (convite.foiUsado) {
+      throw new BadRequestException('Convite já utilizado não pode ser revogado');
+    }
+
+    await this.prisma.convite.update({
+      where: { id: conviteId },
+      data: { expiraEm: new Date() },
+    });
+
+    this.logger.log(`Convite revogado: ${conviteId} por ${userId}`);
+    return { mensagem: 'Convite revogado' };
   }
 }

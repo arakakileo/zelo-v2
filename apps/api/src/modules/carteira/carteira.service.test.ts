@@ -221,5 +221,52 @@ describe('CarteiraService', () => {
       // 100 + 50% of 100 = 150
       expect(result.valorCarregado.toNumber()).toBe(150);
     });
+
+    it('deactivates single-use cupom after application', async () => {
+      mockPrisma.carteira.findUnique.mockResolvedValue({
+        id: 'cart-1',
+        saldo: new Decimal(0),
+      });
+      mockPrisma.cupom.findUnique.mockResolvedValue({
+        id: 'cupom-1',
+        codigo: 'WELCOME',
+        ativo: true,
+        valor: 50,
+        tipo: 'FIXO',
+        usoUnico: true,
+      });
+
+      await service.carregarCreditos(adminCtx, {
+        valor: 100,
+        codigoCupom: 'WELCOME',
+      });
+
+      expect(mockPrisma.cupom.update).toHaveBeenCalledWith({
+        where: { id: 'cupom-1' },
+        data: { ativo: false },
+      });
+    });
+
+    it('does NOT deactivate reusable cupom after application', async () => {
+      mockPrisma.carteira.findUnique.mockResolvedValue({
+        id: 'cart-1',
+        saldo: new Decimal(0),
+      });
+      mockPrisma.cupom.findUnique.mockResolvedValue({
+        id: 'cupom-2',
+        codigo: 'REUSE',
+        ativo: true,
+        valor: 50,
+        tipo: 'FIXO',
+        usoUnico: false,
+      });
+
+      await service.carregarCreditos(adminCtx, {
+        valor: 100,
+        codigoCupom: 'REUSE',
+      });
+
+      expect(mockPrisma.cupom.update).not.toHaveBeenCalled();
+    });
   });
 });

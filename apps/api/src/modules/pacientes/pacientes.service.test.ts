@@ -208,4 +208,165 @@ describe('PacientesService', () => {
       expect(updateCall.data.deletedAt).toBeDefined();
     });
   });
+
+  describe('buscarPorCpf', () => {
+    it('finds patient by CPF using blind index', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.paciente.findFirst.mockResolvedValue({
+        id: 'pac-1',
+        nomeEncrypted: crypto.encrypt('Test Name'),
+        cpfEncrypted: crypto.encrypt('12345678900'),
+        dataNascimento: null,
+        createdAt: new Date(),
+        psicologoResponsavel: { id: 'admin-1', nomeCompleto: 'Admin' },
+      });
+
+      const result = await service.buscarPorCpf(adminCtx, '12345678900');
+
+      expect(result.id).toBe('pac-1');
+      expect(result.nome).toBe('Test Name');
+      const call = mockPrisma.paciente.findFirst.mock.calls[0][0];
+      expect(call.where.cpfHash).toBeDefined();
+    });
+
+    it('throws NotFoundException when CPF not found', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.buscarPorCpf(adminCtx, '00000000000'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('restricts PSICOLOGO to own patients only', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.buscarPorCpf(psicologoCtx, '12345678900'),
+      ).rejects.toThrow(NotFoundException);
+
+      const call = mockPrisma.paciente.findFirst.mock.calls[0][0];
+      expect(call.where.psicologoResponsavelId).toBe('psico-1');
+    });
+  });
+
+  describe('adicionarContato', () => {
+    it('adds a contact with encrypted value', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: 'pac-1', psicologoResponsavelId: 'admin-1' });
+      mockPrisma.pacienteContato.create.mockResolvedValue({
+        id: 'cont-1',
+        tipo: 'EMAIL',
+        valorEncrypted: crypto.encrypt('test@email.com'),
+      });
+
+      const result = await service.adicionarContato(adminCtx, 'pac-1', {
+        tipo: 'EMAIL',
+        valor: 'test@email.com',
+      });
+
+      const createCall = mockPrisma.pacienteContato.create.mock.calls[0][0];
+      expect(createCall.data.valorEncrypted).not.toBe('test@email.com');
+      expect(createCall.data.valorHash).toBeDefined();
+      expect(result.tipo).toBe('EMAIL');
+      expect(result.valor).toBe('test@email.com');
+    });
+
+    it('throws NotFoundException when patient does not exist', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.adicionarContato(adminCtx, 'unknown', {
+          tipo: 'EMAIL',
+          valor: 'test@email.com',
+        }),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('removerContato', () => {
+    it('soft deletes a contact', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: 'pac-1', psicologoResponsavelId: 'admin-1' });
+      mockPrisma.pacienteContato.findFirst.mockResolvedValue({ id: 'cont-1' });
+
+      const result = await service.removerContato(adminCtx, 'pac-1', 'cont-1');
+
+      expect(mockPrisma.pacienteContato.update).toHaveBeenCalledWith({
+        where: { id: 'cont-1' },
+        data: { deletedAt: expect.any(Date) },
+      });
+      expect(result.mensagem).toContain('removido');
+    });
+
+    it('throws NotFoundException when contact does not exist', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: 'pac-1', psicologoResponsavelId: 'admin-1' });
+      mockPrisma.pacienteContato.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.removerContato(adminCtx, 'pac-1', 'unknown'),
+      ).rejects.toThrow(NotFoundException);
+    });
+  });
+
+  describe('adicionarEndereco', () => {
+    it('adds an address with encrypted sensitive fields', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: 'pac-1', psicologoResponsavelId: 'admin-1' });
+      mockPrisma.pacienteEndereco.create.mockResolvedValue({ id: 'end-1' });
+
+      const result = await service.adicionarEndereco(adminCtx, 'pac-1', {
+        logradouro: 'Rua das Flores',
+        bairro: 'Centro',
+        cep: '01001000',
+        numero: '123',
+        cidade: 'São Paulo',
+        estado: 'SP',
+      });
+
+      const createCall = mockPrisma.pacienteEndereco.create.mock.calls[0][0];
+      expect(createCall.data.logradouroEncrypted).not.toBe('Rua das Flores');
+      expect(createCall.data.bairroEncrypted).not.toBe('Centro');
+      expect(createCall.data.cep).toBe('01001000');
+      expect(createCall.data.cidade).toBe('São Paulo');
+      expect(result.id).toBe('end-1');
+    });
+  });
+
+  describe('listarEnderecos', () => {
+    it('returns decrypted enderecos', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: 'pac-1', psicologoResponsavelId: 'admin-1' });
+      mockPrisma.pacienteEndereco.findMany.mockResolvedValue([
+        {
+          id: 'end-1',
+          logradouroEncrypted: crypto.encrypt('Rua das Flores'),
+          bairroEncrypted: crypto.encrypt('Centro'),
+          complementoEncrypted: null,
+          cep: '01001000',
+          numero: '123',
+          cidade: 'São Paulo',
+          estado: 'SP',
+        },
+      ]);
+
+      const result = await service.listarEnderecos(adminCtx, 'pac-1');
+
+      expect(result).toHaveLength(1);
+      expect(result[0]!.cep).toBe('01001000');
+      expect(result[0]!.logradouro).toBe('Rua das Flores');
+      expect(result[0]!.complemento).toBeNull();
+    });
+
+    it('returns empty array when patient has no enderecos', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue({ id: 'pac-1', psicologoResponsavelId: 'admin-1' });
+      mockPrisma.pacienteEndereco.findMany.mockResolvedValue([]);
+
+      const result = await service.listarEnderecos(adminCtx, 'pac-1');
+      expect(result).toEqual([]);
+    });
+  });
 });

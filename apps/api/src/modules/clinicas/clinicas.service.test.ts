@@ -169,4 +169,51 @@ describe('ClinicasService', () => {
       expect(result.carteira!.saldo).toBe(100);
     });
   });
+
+  describe('listarEquipe', () => {
+    it('throws ForbiddenException when user has no membership', async () => {
+      mockPrisma.membership.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.listarEquipe('user-1', 'c1'),
+      ).rejects.toThrow(ForbiddenException);
+    });
+
+    it('returns active memberships without PII', async () => {
+      mockPrisma.membership.findFirst.mockResolvedValue({ id: 'm-caller' });
+      mockPrisma.membership.findMany.mockResolvedValue([
+        {
+          id: 'm1',
+          papel: 'ADMIN',
+          registroProfissional: null,
+          estaAtivo: true,
+          user: { id: 'u1', nomeCompleto: 'Admin User', email: 'admin@zelo.dev' },
+        },
+        {
+          id: 'm2',
+          papel: 'PSICOLOGO',
+          registroProfissional: 'CRP 06/12345',
+          estaAtivo: true,
+          user: { id: 'u2', nomeCompleto: 'Psy User', email: 'psy@zelo.dev' },
+        },
+      ]);
+
+      const result = await service.listarEquipe('user-1', 'c1');
+
+      expect(result).toHaveLength(2);
+      expect(result[0]!.user.id).toBe('u1');
+      // CPF must NOT be in the response (no leak)
+      const adminUser = result[0]!.user as Record<string, unknown>;
+      expect(adminUser['cpfEncrypted']).toBeUndefined();
+      expect(adminUser['cpf']).toBeUndefined();
+    });
+
+    it('returns empty array when clinica has only inactive memberships', async () => {
+      mockPrisma.membership.findFirst.mockResolvedValue({ id: 'm-caller' });
+      mockPrisma.membership.findMany.mockResolvedValue([]);
+
+      const result = await service.listarEquipe('user-1', 'c1');
+      expect(result).toEqual([]);
+    });
+  });
 });

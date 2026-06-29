@@ -73,27 +73,30 @@ export class CarteiraService {
 
     let valorFinal = new Decimal(dto.valor);
     let descricao = `Carga de créditos: ${dto.valor}`;
+    let cupom: { id: string; usoUnico: boolean } | null = null;
 
     // Processar cupom se fornecido
     if (dto.codigoCupom) {
-      const cupom = await this.prisma.cupom.findUnique({
+      const cupomDb = await this.prisma.cupom.findUnique({
         where: { codigo: dto.codigoCupom },
       });
 
-      if (!cupom) throw new BadRequestException('Cupom não encontrado');
-      if (!cupom.ativo) throw new BadRequestException('Cupom inativo');
-      if (cupom.validade && cupom.validade < new Date()) throw new BadRequestException('Cupom expirado');
+      if (!cupomDb) throw new BadRequestException('Cupom não encontrado');
+      if (!cupomDb.ativo) throw new BadRequestException('Cupom inativo');
+      if (cupomDb.validade && cupomDb.validade < new Date()) throw new BadRequestException('Cupom expirado');
 
-      if (cupom.tipo === 'FIXO') {
-        valorFinal = valorFinal.plus(cupom.valor);
-        descricao += ` + bônus fixo ${cupom.valor} (cupom ${cupom.codigo})`;
-      } else if (cupom.tipo === 'PERCENTUAL_DESCONTO') {
+      cupom = cupomDb;
+
+      if (cupomDb.tipo === 'FIXO') {
+        valorFinal = valorFinal.plus(cupomDb.valor);
+        descricao += ` + bônus fixo ${cupomDb.valor} (cupom ${cupomDb.codigo})`;
+      } else if (cupomDb.tipo === 'PERCENTUAL_DESCONTO') {
         // Desconto não se aplica a carga — é mais para compras futuras
-        descricao += ` (cupom ${cupom.codigo} registrado)`;
-      } else if (cupom.tipo === 'PERCENTUAL_BONUS') {
-        const bonus = valorFinal.mul(cupom.valor).div(100);
+        descricao += ` (cupom ${cupomDb.codigo} registrado)`;
+      } else if (cupomDb.tipo === 'PERCENTUAL_BONUS') {
+        const bonus = valorFinal.mul(cupomDb.valor).div(100);
         valorFinal = valorFinal.plus(bonus);
-        descricao += ` + bônus ${cupom.valor}% = ${bonus} (cupom ${cupom.codigo})`;
+        descricao += ` + bônus ${cupomDb.valor}% = ${bonus} (cupom ${cupomDb.codigo})`;
       }
     }
 
@@ -114,8 +117,13 @@ export class CarteiraService {
         },
       });
 
-      // Se cupom foi usado e é de uso único, poderia desativar aqui
-      // (não implementado — depende da regra de negócio)
+      // Cupom de uso único: desativa após aplicação para impedir reuso
+      if (cupom?.usoUnico) {
+        await tx.cupom.update({
+          where: { id: cupom.id },
+          data: { ativo: false },
+        });
+      }
     });
 
     this.logger.log(`Carga de ${valorFinal} créditos na clínica ${ctx.clinicaId}`);
