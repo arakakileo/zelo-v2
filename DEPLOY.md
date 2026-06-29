@@ -30,6 +30,20 @@ JWT_REFRESH_SECRET=<openssl rand -base64 32>
 se perdidas/trocadas após deploy, todos os dados cifrados de pacientes
 ficam indecifráveis. Backup obrigatório em local seguro (cofre/secrets manager).
 
+## Notas sobre schema (leia antes de migrar)
+
+Este projeto é **schema-first**: usa `prisma db push` e NÃO mantém
+`prisma/migrations/`. Implicações:
+
+- `db push` sincroniza o schema diretamente contra o banco. Em DB **com dados**,
+  qualquer mudança destrutiva (drop de coluna, tipo incompatível) causa **data loss**
+  silencioso a menos que você revise o diff antes.
+- `prisma db push` **não possui** `--dry-run`. O preview real é
+  `prisma migrate diff` (comando read-only, ver Passo 4).
+- `--accept-data-loss` é um **escape hatch**, não caminho padrão. Ele força a
+  aplicação mesmo quando o Prisma detecta perda de dados. Só use após revisão
+  humana explícita do diff e com backup confirmado.
+
 ## Procedimento de deploy (fail-closed)
 
 ### Passo 0 — Verificação pré-deploy
@@ -37,7 +51,17 @@ ficam indecifráveis. Backup obrigatório em local seguro (cofre/secrets manager
 # No host de deploy:
 cd /opt/zelo
 git pull origin master
-docker compose -f docker-compose.prod.yml config -q  # valida compose
+
+# Validar compose (silencioso = OK):
+docker compose -f docker-compose.prod.yml config -q
+
+# Revisar o que mudou desde o último deploy:
+git diff --name-only <ultimo-commit-deployado>..HEAD
+git log --oneline <ultimo-commit-deployado>..HEAD
+
+# Validar schema Prisma (sanity check, não toca no DB):
+docker compose -f docker-compose.prod.yml run --rm api \
+  pnpm --filter @zelo/db exec prisma validate
 ```
 
 ### Passo 1 — Build das imagens
@@ -47,8 +71,10 @@ docker compose -f docker-compose.prod.yml build --no-cache
 
 ### Passo 2 — Backup do banco (rollback safety)
 ```bash
-# Criar backup antes de migration
+# Criar backup antes de qualquer mudança de schema
 docker exec zelo-db pg_dump -U zelo zelo_db > /opt/zelo/backups/pre-deploy-$(date +%Y%m%d%H%M%S).sql
+# Confirmar que o backup não está vazio:
+ls -lh /opt/zelo/backups/pre-deploy-*.sql
 ```
 
 ### Passo 3 — Subir dependências (DB primeiro)
@@ -58,17 +84,45 @@ docker compose -f docker-compose.prod.yml up -d db
 docker compose -f docker-compose.prod.yml exec db pg_isready -U zelo
 ```
 
-### Passo 4 — Aplicar schema (prisma db push)
-**ATENÇÃO**: Projeto usa `prisma db push` (schema-first, sem migration history).
-Em DB existente com dados, `db push` pode causar data loss se houver mudanças
-destrutivas. Sempre revisar diff do schema antes:
-```bash
-# Ver o que vai mudar (não aplica):
-docker compose -f docker-compose.prod.yml run --rm api pnpm --filter @zelo/db prisma db push --accept-data-loss --dry-run
+### Passo 4 — Aplicar schema ao banco
 
-# Se seguro, aplicar:
-docker compose -f docker-compose.prod.yml run --rm api pnpm --filter @zelo/db prisma db push --accept-data-loss
+**SEMPRE** faça o preview read-only do diff ANTES de aplicar (em DB novo ou
+existente). `prisma migrate diff` é um comando de leitura — não escreve nada.
+
+```bash
+# PREVIEW (read-only): mostra o que db push aplicaria, sem tocar no DB.
+docker compose -f docker-compose.prod.yml run --rm api \
+  pnpm --filter @zelo/db exec prisma migrate diff \
+    --from-schema-datasource packages/db/prisma/schema.prisma \
+    --to-schema-datamodel packages/db/prisma/schema.prisma
 ```
+
+#### Caminho A — DB novo/vazio (deploy inicial)
+Nenhum dado existe, `db push` é seguro e não há data loss:
+```bash
+docker compose -f docker-compose.prod.yml run --rm api \
+  pnpm --filter @zelo/db exec prisma db push
+```
+
+#### Caminho B — DB existente com dados (deploy de atualização)
+NÃO aplique cegamente. Procedimento obrigatório:
+
+1. Rodar o preview (`migrate diff`) acima e **inspecionar o output**.
+2. Se o diff indicar mudanças destrutivas (`DROP COLUMN`, `DROP TABLE`,
+   `ALTER COLUMN ... TYPE`), isto é **data loss** — bloquear:
+   - Confirmar que o backup do Passo 2 está íntegro.
+   - Revisão humana do diff + plano de rollback documentado.
+   - Só então aplicar com `--accept-data-loss` explícito:
+     ```bash
+     docker compose -f docker-compose.prod.yml run --rm api \
+       pnpm --filter @zelo/db exec prisma db push --accept-data-loss
+     ```
+3. Se o diff for aditivo apenas (`CREATE TABLE`, `CREATE INDEX`, `ADD COLUMN`
+   com default/null), `db push` sem `--accept-data-loss` é seguro:
+   ```bash
+   docker compose -f docker-compose.prod.yml run --rm api \
+     pnpm --filter @zelo/db exec prisma db push
+   ```
 
 ### Passo 5 — Deploy das apps
 ```bash
@@ -119,9 +173,11 @@ docker compose -f docker-compose.prod.yml up -d api web
 ## Estado atual (2026-06-28)
 
 - ✅ Gates locais verdes: lint+typecheck+test+build (16/16 tasks, 183 testes)
-- ✅ CI GitHub Actions verde: run 28341162464 (master)
-- ✅ Código Fase 1/2 commitado e pushed (master @ 71e1be5)
+- ✅ CI GitHub Actions verde: run **28341256491** (master, SHA `281b51a`)
+- ✅ Código Fase 1/2 commitado e pushed (master HEAD `281b51a`)
 - ✅ docker-compose.prod.yml existe e está válido (Traefik, healthchecks)
-- ⚠️ **Sem migration files** — projeto usa `prisma db push` (revisar diff antes de aplicar em prod)
+- ✅ Prisma schema válido (`prisma validate` v6.3.1)
+- ⚠️ **Sem migration files** — projeto usa `prisma db push` (schema-first).
+  Revisar `prisma migrate diff` antes de aplicar em DB com dados (ver Passo 4).
 - ⛔ **Staging/Prod não provisionado** — VPS/Traefik/DNS/secrets precisam ser configurados
 - ⛔ **Sem secrets de produção** — host precisa de .env com DB_PASSWORD/ENCRYPTION_KEY/etc
