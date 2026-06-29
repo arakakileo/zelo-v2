@@ -34,6 +34,8 @@ services:
       JWT_SECRET: ${JWT_SECRET}
       JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET}
       PORT: 3000
+    ports:
+      - "127.0.0.1:3421:3000"
     networks:
       - default
       - traefik-public
@@ -63,6 +65,8 @@ services:
         condition: service_healthy
     environment:
       HOSTNAME: "0.0.0.0"
+    ports:
+      - "127.0.0.1:3420:3000"
     networks:
       - default
       - traefik-public
