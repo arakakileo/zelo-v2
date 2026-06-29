@@ -57,6 +57,17 @@ export class SessoesController {
     return this.sessoesService.finalizarSessao(req.tenantContext, id, dto);
   }
 
+  @Post(':id/cancelar')
+  @HttpCode(HttpStatus.OK)
+  @ApiOperation({ summary: 'Cancelar sessão aberta (estorna créditos)' })
+  @ApiResponse({ status: 200, description: 'Sessão cancelada e créditos estornados' })
+  @ApiResponse({ status: 400, description: 'Sessão não está ABERTA' })
+  @ApiResponse({ status: 403, description: 'Sem permissão' })
+  @ApiResponse({ status: 404, description: 'Sessão não encontrada' })
+  async cancelar(@Req() req: TenantRequest, @Param('id') id: string) {
+    return this.sessoesService.cancelarSessao(req.tenantContext, id);
+  }
+
   @Get(':id/relatorio')
   @ApiOperation({ summary: 'Ver relatório completo da sessão (descriptografado)' })
   @ApiResponse({ status: 200, description: 'Relatório da sessão' })
