@@ -322,21 +322,16 @@ describe('AuthService', () => {
         email: 'test@zelo.dev',
         nomeCompleto: 'Test User',
         createdAt: new Date(),
-        memberships: [
-          {
-            id: 'm1',
-            clinicaId: 'c1',
-            papel: 'ADMIN',
-            clinica: { id: 'c1', razaoSocial: 'Clinica A', nomeFantasia: 'A' },
-          },
-        ],
+        registroProfissional: null,
+        assinatura: null,
+        carteira: { saldo: 0 },
       };
       mockPrisma.user.findUnique.mockResolvedValue(mockUser);
 
       const result = await service.getProfile('user-1');
 
       expect(result.id).toBe('user-1');
-      expect(result.memberships).toHaveLength(1);
+      expect(result.assinatura).toBeNull();
     });
 
     it('throws UnauthorizedException when user not found', async () => {

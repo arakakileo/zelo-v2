@@ -18,86 +18,137 @@ const crypto = new CryptoService(getRequiredEnv('ENCRYPTION_KEY'));
 const blindIndex = new BlindIndexService(getRequiredEnv('BLIND_INDEX_PEPPER'));
 
 async function main() {
-  console.log('🌱 Seeding database...');
+  console.log('🌱 Seeding database (Zelo V2 — single-user model)...');
 
-  // 1. Admin user
-  const admin = await prisma.user.upsert({
-    where: { email: 'admin@zelo.dev' },
+  // ── 1. Planos (3 tiers) ──────────────────────────────
+  const planoSimples = await prisma.plano.upsert({
+    where: { codigo: 'simples' },
     update: {},
     create: {
-      email: 'admin@zelo.dev',
-      senhaHash: await hashPassword('Admin123'),
-      nomeCompleto: 'Admin Dev',
-      cpfEncrypted: crypto.encrypt('11111111111'),
+      codigo: 'simples',
+      nome: 'Simples',
+      precoMensalBRL: 49.9,
+      cotaMensal: 30,
+      precoPaygBRL: 2.5,
+      ativo: true,
+      ordem: 1,
+    },
+  });
+
+  const planoIntermediario = await prisma.plano.upsert({
+    where: { codigo: 'intermediario' },
+    update: {},
+    create: {
+      codigo: 'intermediario',
+      nome: 'Intermediário',
+      precoMensalBRL: 99.9,
+      cotaMensal: 80,
+      precoPaygBRL: 2.0,
+      ativo: true,
+      ordem: 2,
+    },
+  });
+
+  const planoAvancado = await prisma.plano.upsert({
+    where: { codigo: 'avancado' },
+    update: {},
+    create: {
+      codigo: 'avancado',
+      nome: 'Avançado',
+      precoMensalBRL: 199.9,
+      cotaMensal: 200,
+      precoPaygBRL: 1.5,
+      ativo: true,
+      ordem: 3,
+    },
+  });
+  console.log(`  ✅ 3 planos: ${planoSimples.nome}, ${planoIntermediario.nome}, ${planoAvancado.nome}`);
+
+  // ── 2. Usuário demo (psicólogo com plano Intermediário) ──
+  const senhaHash = await hashPassword('Zelo123');
+  const cpfEncrypted = crypto.encrypt('11111111111');
+
+  const user = await prisma.user.upsert({
+    where: { email: 'demo@zelo.dev' },
+    update: {},
+    create: {
+      email: 'demo@zelo.dev',
+      senhaHash,
+      nomeCompleto: 'Dra. Ana Costa',
+      cpfEncrypted,
       cpfHash: blindIndex.hashCpf('11111111111'),
-    },
-  });
-  console.log(`  ✅ User admin: ${admin.id}`);
-
-  // 2. Psicólogo user
-  const psicologo = await prisma.user.upsert({
-    where: { email: 'psicologo@zelo.dev' },
-    update: {},
-    create: {
-      email: 'psicologo@zelo.dev',
-      senhaHash: await hashPassword('Psico123'),
-      nomeCompleto: 'Dr. João Silva',
-      cpfEncrypted: crypto.encrypt('22222222222'),
-      cpfHash: blindIndex.hashCpf('22222222222'),
-    },
-  });
-  console.log(`  ✅ User psicólogo: ${psicologo.id}`);
-
-  // 3. Clínica
-  const clinica = await prisma.clinica.upsert({
-    where: { cnpjCpfHash: blindIndex.hashCnpjCpf('12345678000190') },
-    update: {},
-    create: {
-      razaoSocial: 'Clínica Mente Sã LTDA',
-      nomeFantasia: 'Mente Sã',
-      cnpjCpfEncrypted: crypto.encrypt('12345678000190'),
-      cnpjCpfHash: blindIndex.hashCnpjCpf('12345678000190'),
-    },
-  });
-  console.log(`  ✅ Clínica: ${clinica.id}`);
-
-  // 4. Memberships
-  await prisma.membership.upsert({
-    where: { userId_clinicaId: { userId: admin.id, clinicaId: clinica.id } },
-    update: {},
-    create: {
-      userId: admin.id,
-      clinicaId: clinica.id,
-      papel: 'ADMIN',
-      estaAtivo: true,
-    },
-  });
-
-  await prisma.membership.upsert({
-    where: { userId_clinicaId: { userId: psicologo.id, clinicaId: clinica.id } },
-    update: {},
-    create: {
-      userId: psicologo.id,
-      clinicaId: clinica.id,
-      papel: 'PSICOLOGO',
       registroProfissional: 'CRP 06/12345',
-      estaAtivo: true,
     },
   });
-  console.log('  ✅ Memberships criados');
+  console.log(`  ✅ User demo: ${user.id} (${user.email})`);
 
-  // 5. Carteira com saldo inicial
-  await prisma.carteira.upsert({
-    where: { clinicaId: clinica.id },
+  // ── 3. Carteira (bônus de boas-vindas: 10 créditos) ──
+  const carteira = await prisma.carteira.upsert({
+    where: { userId: user.id },
     update: {},
     create: {
-      clinicaId: clinica.id,
-      saldo: 500,
+      userId: user.id,
+      saldo: 10,
     },
   });
-  console.log('  ✅ Carteira com 500 créditos');
 
-  // 6. Testes no catálogo global
+  // Transação de bônus
+  await prisma.transacao.upsert({
+    where: { id: '00000000-0000-4000-a000-000000000001' },
+    update: {},
+    create: {
+      id: '00000000-0000-4000-a000-000000000001',
+      userId: user.id,
+      tipo: 'BONUS' as any,
+      valor: 10,
+      descricao: 'Bônus de boas-vindas',
+    },
+  }).catch(() => {
+    // upsert with fixed id may conflict if already exists; ignore
+  });
+  console.log(`  ✅ Carteira: ${carteira.saldo} créditos (bônus boas-vindas)`);
+
+  // ── 4. Assinatura ativa no plano Intermediário ──
+  const agora = new Date();
+  const cicloFim = new Date(agora);
+  cicloFim.setDate(cicloFim.getDate() + 30);
+
+  const assinaturaExistente = await prisma.assinatura.findFirst({
+    where: { userId: user.id },
+  });
+
+  let assinatura;
+  if (!assinaturaExistente) {
+    assinatura = await prisma.assinatura.create({
+      data: {
+        userId: user.id,
+        planoId: planoIntermediario.id,
+        status: 'ATIVA',
+        cicloInicio: agora,
+        cicloFim,
+      },
+    });
+  } else {
+    assinatura = assinaturaExistente;
+  }
+  console.log(`  ✅ Assinatura: ${planoIntermediario.nome} (até ${cicloFim.toISOString().split('T')[0]})`);
+
+  // CotaUso do ciclo atual
+  const cicloYYYYMM = agora.toISOString().slice(0, 7);
+  await prisma.cotaUso.upsert({
+    where: { assinaturaId_cicloYYYYMM: { assinaturaId: assinatura.id, cicloYYYYMM } },
+    update: {},
+    create: {
+      assinaturaId: assinatura.id,
+      cicloYYYYMM,
+      creditosIncluidos: planoIntermediario.cotaMensal,
+      creditosConsumidos: 0,
+      creditosExtras: 0,
+    },
+  });
+  console.log(`  ✅ Cota ciclo ${cicloYYYYMM}: ${planoIntermediario.cotaMensal} créditos`);
+
+  // ── 5. Testes no catálogo global ──
   const testes = [
     { nome: 'Inventário Beck de Depressão', sigla: 'BDI-II', precoCreditos: 15 },
     { nome: 'Escala de Ansiedade de Beck', sigla: 'BAI', precoCreditos: 15 },
@@ -115,21 +166,7 @@ async function main() {
   }
   console.log(`  ✅ ${testes.length} testes no catálogo`);
 
-  // 7. Paciente de exemplo
-  const paciente = await prisma.paciente.create({
-    data: {
-      clinicaId: clinica.id,
-      psicologoResponsavelId: psicologo.id,
-      nomeEncrypted: crypto.encrypt('Maria das Graças'),
-      cpfEncrypted: crypto.encrypt('33333333333'),
-      cpfHash: blindIndex.hashCpf('33333333333'),
-      dataNascimento: new Date('1990-05-15'),
-      createdById: psicologo.id,
-    },
-  });
-  console.log(`  ✅ Paciente: ${paciente.id}`);
-
-  // 8. Cupom de boas-vindas
+  // ── 6. Cupom de boas-vindas (opcional) ──
   await prisma.cupom.upsert({
     where: { codigo: 'BEMVINDO50' },
     update: {},
@@ -140,13 +177,38 @@ async function main() {
       ativo: true,
       validade: new Date('2027-12-31'),
     },
+  }).catch(() => {});
+  console.log('  ✅ Cupom BEMVINDO50 (opcional)');
+
+  // ── 7. Paciente de exemplo ──
+  const cpfPaciente = '33333333333';
+  const cpfHashPaciente = blindIndex.hashCpf(cpfPaciente);
+
+  const pacienteExistente = await prisma.paciente.findFirst({
+    where: { psicologoResponsavelId: user.id, cpfHash: cpfHashPaciente, deletedAt: null },
   });
-  console.log('  ✅ Cupom BEMVINDO50');
+
+  let paciente;
+  if (!pacienteExistente) {
+    paciente = await prisma.paciente.create({
+      data: {
+        psicologoResponsavelId: user.id,
+        nomeEncrypted: crypto.encrypt('Maria das Graças'),
+        cpfEncrypted: crypto.encrypt(cpfPaciente),
+        cpfHash: cpfHashPaciente,
+        dataNascimento: new Date('1990-05-15'),
+        createdById: user.id,
+      },
+    });
+  } else {
+    paciente = pacienteExistente;
+  }
+  console.log(`  ✅ Paciente: ${paciente.id}`);
 
   console.log('\n🎉 Seed completo!');
   console.log('\n📋 Credenciais de dev:');
-  console.log('  Admin:     admin@zelo.dev / Admin123');
-  console.log('  Psicólogo: psicologo@zelo.dev / Psico123');
+  console.log('  Demo: demo@zelo.dev / Zelo123');
+  console.log(`  Plano: ${planoIntermediario.nome} (${planoIntermediario.cotaMensal} créditos/mês)`);
 }
 
 main()

@@ -5,11 +5,10 @@ import { PrismaModule } from './common/prisma/prisma.module';
 import { GlobalExceptionFilter } from './common/filters/global-exception.filter';
 import { HealthModule } from './health/health.module';
 import { AuthModule } from './modules/auth/auth.module';
-import { ClinicasModule } from './modules/clinicas/clinicas.module';
-import { ConvitesModule } from './modules/convites/convites.module';
 import { PacientesModule } from './modules/pacientes/pacientes.module';
+import { PacientesCrmModule } from './modules/pacientes-crm/pacientes-crm.module';
 import { TestesModule } from './modules/testes/testes.module';
-import { CarteiraModule } from './modules/carteira/carteira.module';
+import { BillingModule } from './billing/billing.module';
 
 @Module({
   imports: [
@@ -20,11 +19,10 @@ import { CarteiraModule } from './modules/carteira/carteira.module';
     PrismaModule,
     HealthModule,
     AuthModule,
-    ClinicasModule,
-    ConvitesModule,
     PacientesModule,
+    PacientesCrmModule,
     TestesModule,
-    CarteiraModule,
+    BillingModule,
   ],
   providers: [
     {

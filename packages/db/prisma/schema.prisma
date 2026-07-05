@@ -1,6 +1,7 @@
 // =============================================================
 // Zelo V2 — Prisma Schema
-// SaaS multi-tenant para gestão de consultórios de psicologia
+// Plataforma para psicólogos: 1 usuário = 1 conta = 1 plano.
+// Sem clínicas/multi-tenancy. Créditos por assinatura + PAYG.
 // =============================================================
 
 generator client {
@@ -15,11 +16,6 @@ datasource db {
 // ─────────────────────────────────────────────
 // Enums
 // ─────────────────────────────────────────────
-
-enum Papel {
-  ADMIN
-  PSICOLOGO
-}
 
 enum StatusSessao {
   ABERTO
@@ -46,6 +42,172 @@ enum TipoTransacao {
   DEBITO
   BONUS
   ESTORNO
+  PAGAMENTO
+  RENOVACAO
+  UPGRADE_PLANO
+  ADMIN_AJUSTE
+}
+
+enum StatusAssinatura {
+  ATIVA
+  CANCELADA
+  SUSPENSA
+  TRIAL
+}
+
+enum StatusPagamento {
+  PENDENTE
+  CONFIRMADO
+  FALHOU
+  REEMBOLSADO
+}
+
+enum TipoPagamento {
+  COMPRA_CREDITOS
+  ASSINATURA
+  UPGRADE
+  RENOVACAO
+}
+
+enum CodigoOrigemConsumo {
+  COTA
+  PAYG
+}
+
+/// Fase do relacionamento CRM entre psicólogo e paciente.
+enum CrmStatus {
+  LEAD
+  ATIVO
+  PAUSA
+  ALTA
+  DESISTIU
+}
+
+/// Prioridade de acompanhamento do paciente no funil CRM.
+enum CrmPrioridade {
+  BAIXA
+  MEDIA
+  ALTA
+  URGENTE
+}
+
+/// Status de uma tarefa de follow-up do CRM.
+enum CrmFollowUpStatus {
+  PENDENTE
+  CONCLUIDO
+  CANCELADO
+}
+
+// ─────────────────────────────────────────────
+// Planos e Assinaturas
+// ─────────────────────────────────────────────
+
+/// Plano comercializável. O preço de um crédito extra (PAYG) é por faixa
+/// cumulativa — `PlanoCobrancaExtra` permite rampa progressiva opcional
+/// (ex: 1..50 a R$2,50; 51..200 a R$2,20; 201+ a R$1,90). Se não houver
+/// nenhuma faixa cadastrada para o plano, usamos `precoPaygBRL` como
+/// preço fixo por crédito.
+model Plano {
+  id              String   @id @default(uuid()) @db.Uuid
+  codigo          String   @unique @db.VarChar(40)
+  nome            String
+  precoMensalBRL  Decimal  @db.Decimal(12, 2)
+  cotaMensal      Int
+  precoPaygBRL    Decimal  @db.Decimal(12, 2)
+  ativo           Boolean  @default(true)
+  ordem           Int      @default(0)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  assinaturas     Assinatura[]
+  faixasExtra     PlanoCobrancaExtra[]
+
+  @@map("planos")
+}
+
+/// Faixas de preço PAYG por plano. Suporta rampa progressiva opcional.
+/// Se a faixaFim for null, vale até o infinito.
+model PlanoCobrancaExtra {
+  id          String   @id @default(uuid()) @db.Uuid
+  planoId     String   @db.Uuid
+  faixaInicio Int
+  faixaFim    Int?
+  precoBRL    Decimal  @db.Decimal(12, 2)
+
+  createdAt   DateTime @default(now())
+
+  plano       Plano    @relation(fields: [planoId], references: [id], onDelete: Cascade)
+
+  @@index([planoId, faixaInicio])
+  @@map("plano_cobrancas_extra")
+}
+
+/// Assinatura do usuário em um plano. 1:1 com User. `cicloFim` é a data
+/// em que a cota expira e o ciclo precisa ser renovado.
+model Assinatura {
+  id              String           @id @default(uuid()) @db.Uuid
+  userId          String           @unique @db.Uuid
+  planoId         String           @db.Uuid
+  status          StatusAssinatura @default(ATIVA)
+  cicloInicio     DateTime
+  cicloFim        DateTime
+  canceladaEm     DateTime?
+  gatewayRef      String?
+
+  createdAt       DateTime         @default(now())
+  updatedAt       DateTime         @updatedAt
+
+  user            User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  plano           Plano            @relation(fields: [planoId], references: [id])
+  ciclos          CotaUso[]
+
+  @@index([status, cicloFim])
+  @@map("assinaturas")
+}
+
+/// Estado de uso da cota no ciclo corrente de uma assinatura.
+/// Lock de linha: `@@unique[assinaturaId, cicloYYYYMM]` + transações
+/// cuidam da concorrência no ConsumoService.
+model CotaUso {
+  id                  String     @id @default(uuid()) @db.Uuid
+  assinaturaId        String     @db.Uuid
+  /// YYYY-MM string. Permite 1 ciclo por (assinatura, mês).
+  cicloYYYYMM         String     @db.VarChar(7)
+  creditosIncluidos   Int        @default(0)
+  creditosConsumidos  Int        @default(0)
+  creditosExtras      Int        @default(0)
+
+  createdAt           DateTime   @default(now())
+  updatedAt           DateTime   @updatedAt
+
+  assinatura          Assinatura @relation(fields: [assinaturaId], references: [id], onDelete: Cascade)
+
+  @@unique([assinaturaId, cicloYYYYMM])
+  @@map("cota_uso")
+}
+
+/// Registro de pagamento vindo de gateway externo (Mercado Pago, Stripe,
+/// etc) ou manual (admin). Após `CONFIRMADO`, os créditos creditam em
+/// `Carteira.saldo` via `Transacao(PAGAMENTO)`.
+model PagamentoExterno {
+  id            String         @id @default(uuid()) @db.Uuid
+  userId        String         @db.Uuid
+  gatewayRef    String         @unique @db.VarChar(120)
+  tipo          TipoPagamento
+  valorBRL      Decimal        @db.Decimal(12, 2)
+  creditos      Int
+  status        StatusPagamento @default(PENDENTE)
+  rawJson       Json?
+
+  createdAt     DateTime       @default(now())
+  updatedAt     DateTime       @updatedAt
+  confirmadoEm  DateTime?
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, status])
+  @@map("pagamentos_externos")
 }
 
 // ─────────────────────────────────────────────
@@ -53,12 +215,15 @@ enum TipoTransacao {
 // ─────────────────────────────────────────────
 
 model User {
-  id            String   @id @default(uuid()) @db.Uuid
-  email         String   @unique
-  senhaHash     String
-  nomeCompleto  String
-  cpfEncrypted  String   @db.Text
-  cpfHash       String   @unique @db.Char(64)
+  id                  String   @id @default(uuid()) @db.Uuid
+  email               String   @unique
+  senhaHash           String
+  nomeCompleto        String
+  cpfEncrypted        String   @db.Text
+  cpfHash             String   @unique @db.Char(64)
+  /// Registro profissional do psicólogo (CRP). PII clínica — não criptografado
+  /// (precisa ser indexado/pesquisável em alguns fluxos).
+  registroProfissional String? @db.VarChar(50)
 
   // Audit
   createdAt     DateTime  @default(now())
@@ -66,34 +231,29 @@ model User {
   deletedAt     DateTime?
 
   // Relations
-  memberships       Membership[]
-  convitesEnviados  Convite[]         @relation("ConviteEnviadoPor")
-  enderecos         UserEndereco[]
-  contatos          UserContato[]
-  transacoes        Transacao[]
-  pacientes         Paciente[]        @relation("PacienteResponsavel")
+  carteira        Carteira?
+  transacoes      Transacao[]
+  assinatura      Assinatura?
+  pagamentos      PagamentoExterno[]
+  enderecos       UserEndereco[]
+  contatos        UserContato[]
+  pacientes       Paciente[]        @relation("PacienteResponsavel")
   sessoesAplicadas  SessaoTeste[]     @relation("SessaoAplicadaPor")
   sessoesFinalizadas SessaoTeste[]    @relation("SessaoFinalizadaPor")
   sessoesEstornadas  SessaoTeste[]    @relation("SessaoEstornadaPor")
-  refreshTokens     RefreshToken[]
+  refreshTokens   RefreshToken[]
+  crmNotasCriadas PacienteCrmNota[]      @relation("CrmNotaAutor")
+  crmFollowUps    PacienteCrmFollowUp[]  @relation("CrmFollowUpResponsavel")
 
   @@index([deletedAt])
   @@map("users")
 }
 
-/// Tracks issued refresh tokens for rotation + revocation (logout / reuse detection).
-/// Each login starts a new "family". On refresh, the old token is revoked and a new
-/// token in the same family is issued. If a revoked token is reused, the entire
-/// family is revoked (compromise detection).
 model RefreshToken {
   id          String   @id @default(uuid()) @db.Uuid
   userId      String   @db.Uuid
-  /// Random token identifier embedded in the JWT (jti claim).
   jti         String   @unique @db.VarChar(64)
-  /// Groups tokens from the same login session. Revoking a family invalidates
-  /// all tokens in it (used on reuse-detection or password change).
   familyId    String   @db.VarChar(64)
-  /// SHA-256 hash of the raw refresh token for safe DB lookup.
   tokenHash   String   @unique @db.Char(64)
   revoked     Boolean  @default(false)
   replacedById String? @db.Uuid
@@ -149,153 +309,46 @@ model UserContato {
 }
 
 // ─────────────────────────────────────────────
-// Clínicas e Multi-tenancy
-// ─────────────────────────────────────────────
-
-model Clinica {
-  id                String   @id @default(uuid()) @db.Uuid
-  razaoSocial       String
-  nomeFantasia      String?
-  cnpjCpfEncrypted  String   @db.Text
-  cnpjCpfHash       String   @unique @db.Char(64)
-
-  createdAt         DateTime  @default(now())
-  updatedAt         DateTime  @updatedAt
-  deletedAt         DateTime?
-
-  // Relations
-  memberships       Membership[]
-  convites          Convite[]
-  enderecos         ClinicaEndereco[]
-  contatos          ClinicaContato[]
-  carteira          Carteira?
-  pacientes         Paciente[]
-  sessoesTeste      SessaoTeste[]
-
-  @@index([deletedAt])
-  @@map("clinicas")
-}
-
-model ClinicaEndereco {
-  id                    String    @id @default(uuid()) @db.Uuid
-  clinicaId             String    @db.Uuid
-  logradouroEncrypted   String    @db.Text
-  bairroEncrypted       String    @db.Text
-  complementoEncrypted  String?   @db.Text
-  cep                   String    @db.VarChar(8)
-  numero                String    @db.VarChar(20)
-  cidade                String    @db.VarChar(100)
-  estado                String    @db.Char(2)
-
-  createdAt             DateTime  @default(now())
-  updatedAt             DateTime  @updatedAt
-  deletedAt             DateTime?
-
-  clinica               Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
-
-  @@index([clinicaId, deletedAt])
-  @@map("clinica_enderecos")
-}
-
-model ClinicaContato {
-  id              String      @id @default(uuid()) @db.Uuid
-  clinicaId       String      @db.Uuid
-  tipo            TipoContato
-  valorEncrypted  String      @db.Text
-  valorHash       String      @db.Char(64)
-
-  createdAt       DateTime    @default(now())
-  updatedAt       DateTime    @updatedAt
-  deletedAt       DateTime?
-
-  clinica         Clinica     @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
-
-  @@index([clinicaId, deletedAt])
-  @@index([clinicaId, valorHash])
-  @@map("clinica_contatos")
-}
-
-// ─────────────────────────────────────────────
-// Membership (User <-> Clinica)
-// ─────────────────────────────────────────────
-
-model Membership {
-  id                     String    @id @default(uuid()) @db.Uuid
-  userId                 String    @db.Uuid
-  clinicaId              String    @db.Uuid
-  papel                  Papel
-  registroProfissional   String?   @db.VarChar(50)
-  estaAtivo              Boolean   @default(true)
-
-  createdAt              DateTime  @default(now())
-  updatedAt              DateTime  @updatedAt
-  deletedAt              DateTime?
-
-  user                   User      @relation(fields: [userId], references: [id], onDelete: Cascade)
-  clinica                Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
-
-  @@unique([userId, clinicaId])
-  @@index([clinicaId, deletedAt])
-  @@map("memberships")
-}
-
-// ─────────────────────────────────────────────
-// Convites
-// ─────────────────────────────────────────────
-
-model Convite {
-  id            String    @id @default(uuid()) @db.Uuid
-  clinicaId     String    @db.Uuid
-  enviadoPorId  String    @db.Uuid
-  emailDestino  String
-  token         String    @unique @default(uuid()) @db.Uuid
-  papel         Papel
-  expiraEm      DateTime
-  foiUsado      Boolean   @default(false)
-
-  createdAt     DateTime  @default(now())
-  updatedAt     DateTime  @updatedAt
-
-  clinica       Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
-  enviadoPor    User      @relation("ConviteEnviadoPor", fields: [enviadoPorId], references: [id])
-
-  @@index([clinicaId])
-  @@index([emailDestino])
-  @@map("convites")
-}
-
-// ─────────────────────────────────────────────
 // Carteira e Transações (Créditos)
 // ─────────────────────────────────────────────
 
+/// Carteira é 1:1 com User. `saldo` é em créditos (Int).
+/// Cota do plano é controlada em `CotaUso` e debitada
+/// em `Transacao.tipo=DEBITO` com `origem=COTA`.
 model Carteira {
   id          String      @id @default(uuid()) @db.Uuid
-  clinicaId   String      @unique @db.Uuid
-  saldo       Decimal     @default(0) @db.Decimal(12, 2)
+  userId      String      @unique @db.Uuid
+  saldo       Int         @default(0)
 
   createdAt   DateTime    @default(now())
   updatedAt   DateTime    @updatedAt
 
-  clinica     Clinica     @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
-  transacoes  Transacao[]
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
 
   @@map("carteiras")
 }
 
+/// `valor` é Int (em créditos). Toda operação que mexa no saldo
+/// do usuário passa por uma `Transacao` para audit trail. `origem`
+/// distingue se o débito veio da cota do plano ou de créditos
+/// comprados (PAYG). `refTipo`/`refId` apontam para a entidade
+/// que originou a transação (SessaoTeste, Assinatura, PagamentoExterno).
 model Transacao {
-  id          String          @id @default(uuid()) @db.Uuid
-  carteiraId  String          @db.Uuid
-  userId      String          @db.Uuid
+  id          String              @id @default(uuid()) @db.Uuid
+  userId      String              @db.Uuid
   tipo        TipoTransacao
-  valor       Decimal         @db.Decimal(12, 2)
+  origem      CodigoOrigemConsumo @default(PAYG)
+  valor       Int
   descricao   String?
+  refTipo     String?             @db.VarChar(40)
+  refId       String?             @db.Uuid
 
-  createdAt   DateTime        @default(now())
+  createdAt   DateTime            @default(now())
 
-  carteira    Carteira        @relation(fields: [carteiraId], references: [id], onDelete: Cascade)
-  user        User            @relation(fields: [userId], references: [id])
+  user        User                @relation(fields: [userId], references: [id], onDelete: Cascade)
 
-  @@index([carteiraId, createdAt])
+  @@index([userId, createdAt])
+  @@index([refTipo, refId])
   @@map("transacoes")
 }
 
@@ -315,12 +368,11 @@ model Cupom {
 }
 
 // ─────────────────────────────────────────────
-// Pacientes (PII criptografado)
+// Pacientes (PII criptografado, vinculado ao psicólogo)
 // ─────────────────────────────────────────────
 
 model Paciente {
   id                       String    @id @default(uuid()) @db.Uuid
-  clinicaId                String    @db.Uuid
   psicologoResponsavelId   String    @db.Uuid
   nomeEncrypted            String    @db.Text
   cpfEncrypted             String    @db.Text
@@ -333,15 +385,14 @@ model Paciente {
   createdById              String?   @db.Uuid
   updatedById              String?   @db.Uuid
 
-  clinica                  Clinica   @relation(fields: [clinicaId], references: [id], onDelete: Cascade)
-  psicologoResponsavel     User      @relation("PacienteResponsavel", fields: [psicologoResponsavelId], references: [id])
+  psicologoResponsavel     User      @relation("PacienteResponsavel", fields: [psicologoResponsavelId], references: [id], onDelete: Cascade)
   enderecos                PacienteEndereco[]
   contatos                 PacienteContato[]
   sessoesTeste             SessaoTeste[]
+  crm                      PacienteCrm?
 
-  @@unique([clinicaId, cpfHash])
-  @@index([clinicaId, deletedAt])
-  @@index([psicologoResponsavelId])
+  @@index([psicologoResponsavelId, cpfHash])
+  @@index([psicologoResponsavelId, deletedAt])
   @@map("pacientes")
 }
 
@@ -385,14 +436,14 @@ model PacienteContato {
 }
 
 // ─────────────────────────────────────────────
-// Testes (Catálogo global + Sessões tenant)
+// Testes (Catálogo global + Sessões por psicólogo)
 // ─────────────────────────────────────────────
 
 model Teste {
   id              String        @id @default(uuid()) @db.Uuid
   nome            String
   sigla           String        @unique @db.VarChar(20)
-  precoCreditos   Decimal       @db.Decimal(12, 2)
+  precoCreditos   Int
 
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
@@ -405,10 +456,11 @@ model Teste {
 model SessaoTeste {
   id                            String        @id @default(uuid()) @db.Uuid
   pacienteId                    String        @db.Uuid
-  clinicaId                     String        @db.Uuid
   psicologoId                   String        @db.Uuid
   testeId                       String        @db.Uuid
   status                        StatusSessao  @default(ABERTO)
+  precoCobrado                  Int
+  origemConsumo                 CodigoOrigemConsumo @default(COTA)
   dadosRespostas                Json?
   resultadoCalculadoEncrypted   String?       @db.Text
   conclusaoPsicologoEncrypted   String?       @db.Text
@@ -427,7 +479,7 @@ model SessaoTeste {
 
   // ─── Estorno (cancelamento ou bloqueio por regra) ───────────────────
   estornoEm                     DateTime?
-  estornoValor                  Decimal?      @db.Decimal(12, 2)
+  estornoValor                  Int?
   estornoMotivo                 String?       @db.Text
   estornadoPorId                String?       @db.Uuid
 
@@ -438,15 +490,84 @@ model SessaoTeste {
   updatedById                   String?       @db.Uuid
 
   paciente                      Paciente      @relation(fields: [pacienteId], references: [id])
-  clinica                       Clinica       @relation(fields: [clinicaId], references: [id])
   psicologo                     User          @relation("SessaoAplicadaPor", fields: [psicologoId], references: [id])
   teste                         Teste         @relation(fields: [testeId], references: [id])
   finalizadoPor                 User?         @relation("SessaoFinalizadaPor", fields: [finalizadoPorId], references: [id])
   estornadoPor                  User?         @relation("SessaoEstornadaPor", fields: [estornadoPorId], references: [id])
 
-  @@index([clinicaId, deletedAt])
-  @@index([clinicaId, status])
-  @@index([psicologoId])
+  @@index([psicologoId, deletedAt])
+  @@index([psicologoId, status])
   @@index([pacienteId])
   @@map("sessoes_teste")
+}
+
+// ─────────────────────────────────────────────
+// CRM do Paciente (fase, prioridade, notas, follow-ups)
+// ─────────────────────────────────────────────
+
+/// Estado do funil CRM por paciente. 1:1 com `Paciente`.
+/// `status`/`prioridade`/`proximaAcaoEm` são campos de coordenação (não-PII).
+/// `origem` e `proximaAcaoNota` são SEMPRE criptografados via `@zelo/crypto`.
+model PacienteCrm {
+  id                        String        @id @default(uuid()) @db.Uuid
+  pacienteId                String        @unique @db.Uuid
+
+  status                    CrmStatus     @default(LEAD)
+  prioridade                CrmPrioridade @default(MEDIA)
+  origemEncrypted           String?       @db.Text
+  proximaAcaoEm             DateTime?
+  proximaAcaoNotaEncrypted  String?       @db.Text
+
+  createdAt                 DateTime      @default(now())
+  updatedAt                 DateTime      @updatedAt
+  deletedAt                 DateTime?
+  createdById               String?       @db.Uuid
+  updatedById               String?       @db.Uuid
+
+  paciente                  Paciente      @relation(fields: [pacienteId], references: [id], onDelete: Cascade)
+  notas                     PacienteCrmNota[]
+  followUps                 PacienteCrmFollowUp[]
+
+  @@index([status])
+  @@index([prioridade])
+  @@index([proximaAcaoEm])
+  @@map("paciente_crm")
+}
+
+model PacienteCrmNota {
+  id                  String          @id @default(uuid()) @db.Uuid
+  crmId               String          @db.Uuid
+  autorId             String          @db.Uuid
+  conteudoEncrypted   String          @db.Text
+
+  createdAt           DateTime        @default(now())
+  updatedAt           DateTime        @updatedAt
+  deletedAt           DateTime?
+
+  crm                 PacienteCrm     @relation(fields: [crmId], references: [id], onDelete: Cascade)
+  autor               User            @relation("CrmNotaAutor", fields: [autorId], references: [id])
+
+  @@index([crmId, deletedAt, createdAt])
+  @@map("paciente_crm_notas")
+}
+
+model PacienteCrmFollowUp {
+  id                    String            @id @default(uuid()) @db.Uuid
+  crmId                 String            @db.Uuid
+  responsavelId         String            @db.Uuid
+  descricaoEncrypted    String            @db.Text
+  status                CrmFollowUpStatus @default(PENDENTE)
+  venceEm               DateTime?
+  concluidoEm           DateTime?
+
+  createdAt             DateTime          @default(now())
+  updatedAt             DateTime          @updatedAt
+  deletedAt             DateTime?
+
+  crm                   PacienteCrm       @relation(fields: [crmId], references: [id], onDelete: Cascade)
+  responsavel           User              @relation("CrmFollowUpResponsavel", fields: [responsavelId], references: [id])
+
+  @@index([crmId, deletedAt, status])
+  @@index([responsavelId, status, venceEm])
+  @@map("paciente_crm_follow_ups")
 }

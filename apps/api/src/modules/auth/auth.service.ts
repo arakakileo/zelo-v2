@@ -75,14 +75,31 @@ export class AuthService {
     const senhaHash = await this.passwordService.hash(dto.senha);
     const cpfEncrypted = this.crypto.encrypt(cpfDigits);
 
-    const user = await this.prisma.user.create({
-      data: {
-        email: emailLower,
-        senhaHash,
-        nomeCompleto: dto.nomeCompleto,
-        cpfEncrypted,
-        cpfHash,
-      },
+    // Cria User + Carteira (bonus 10) numa transação
+    const user = await this.prisma.$transaction(async (tx) => {
+      const u = await tx.user.create({
+        data: {
+          email: emailLower,
+          senhaHash,
+          nomeCompleto: dto.nomeCompleto,
+          cpfEncrypted,
+          cpfHash,
+        },
+      });
+      // Cria carteira com bonus 10
+      await tx.carteira.create({
+        data: { userId: u.id, saldo: 10 },
+      });
+      // Audit
+      await tx.transacao.create({
+        data: {
+          userId: u.id,
+          tipo: 'BONUS',
+          valor: 10,
+          descricao: 'Bônus de boas-vindas (10 créditos grátis)',
+        },
+      });
+      return u;
     });
 
     this.logger.log(`User registered: ${user.id}`);
@@ -232,16 +249,12 @@ export class AuthService {
         id: true,
         email: true,
         nomeCompleto: true,
+        registroProfissional: true,
         createdAt: true,
-        memberships: {
-          where: { estaAtivo: true, deletedAt: null },
-          select: {
-            id: true,
-            clinicaId: true,
-            papel: true,
-            clinica: { select: { id: true, razaoSocial: true, nomeFantasia: true } },
-          },
+        assinatura: {
+          include: { plano: true },
         },
+        carteira: { select: { saldo: true } },
       },
     });
 

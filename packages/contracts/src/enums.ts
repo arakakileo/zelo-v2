@@ -1,12 +1,4 @@
 /**
- * Papel do usuário dentro de uma clínica.
- */
-export enum Papel {
-  ADMIN = 'ADMIN',
-  PSICOLOGO = 'PSICOLOGO',
-}
-
-/**
  * Status de uma sessão de teste.
  *
  * `BLOQUEADO_REGRA` é o status terminal usado quando o motor de scoring
@@ -36,9 +28,7 @@ export enum MotorStatusSessao {
   BLOQUEADO_CATALOGO_INDISPONIVEL = 'BLOQUEADO_CATALOGO_INDISPONIVEL',
 }
 
-/**
- * Tipos de contato (email, telefone, etc.)
- */
+/** Tipos de contato (email, telefone, etc.) */
 export enum TipoContato {
   EMAIL = 'EMAIL',
   TELEFONE = 'TELEFONE',
@@ -46,9 +36,7 @@ export enum TipoContato {
   WHATSAPP = 'WHATSAPP',
 }
 
-/**
- * Tipos de cupom de desconto/bônus.
- */
+/** Tipos de cupom de desconto/bônus. */
 export enum TipoCupom {
   FIXO = 'FIXO',
   PERCENTUAL_DESCONTO = 'PERCENTUAL_DESCONTO',
@@ -56,25 +44,114 @@ export enum TipoCupom {
 }
 
 /**
- * Tipos de transação na carteira.
+ * Tipos de transação na carteira do usuário.
+ * - CREDITO/DEBITO: ops na carteira (geralmente por sessão de teste).
+ * - BONUS: crédito grátis (boas-vindas, etc).
+ * - ESTORNO: devolução (cancelamento ou bloqueio por regra).
+ * - PAGAMENTO: originou de um pagamento externo confirmado.
+ * - RENOVACAO: créditos adicionados por renovação de ciclo do plano.
+ * - UPGRADE_PLANO: ajuste ao trocar de plano (ex: créditos restantes migrados).
+ * - ADMIN_AJUSTE: ajuste manual feito por um admin.
  */
 export enum TipoTransacao {
   CREDITO = 'CREDITO',
   DEBITO = 'DEBITO',
   BONUS = 'BONUS',
   ESTORNO = 'ESTORNO',
+  PAGAMENTO = 'PAGAMENTO',
+  RENOVACAO = 'RENOVACAO',
+  UPGRADE_PLANO = 'UPGRADE_PLANO',
+  ADMIN_AJUSTE = 'ADMIN_AJUSTE',
 }
 
-/**
- * Contexto de tenant injetado pelo guard de tenancy.
- * Contém as informações necessárias para isolar dados por clínica
- * e aplicar regras baseadas no papel do usuário.
- */
-export interface TenantContext {
-  /** ID do usuário logado */
-  userId: string;
-  /** ID da clínica ativa (do header X-Clinica-ID) */
-  clinicaId: string;
-  /** Papel do usuário nesta clínica */
-  papelAtivo: Papel;
+/** Origem do crédito consumido. Cota do plano ou PAYG. */
+export enum CodigoOrigemConsumo {
+  COTA = 'COTA',
+  PAYG = 'PAYG',
+}
+
+/** Status de uma assinatura. */
+export enum StatusAssinatura {
+  ATIVA = 'ATIVA',
+  CANCELADA = 'CANCELADA',
+  SUSPENSA = 'SUSPENSA',
+  TRIAL = 'TRIAL',
+}
+
+/** Status de um pagamento externo. */
+export enum StatusPagamento {
+  PENDENTE = 'PENDENTE',
+  CONFIRMADO = 'CONFIRMADO',
+  FALHOU = 'FALHOU',
+  REEMBOLSADO = 'REEMBOLSADO',
+}
+
+/** Tipo de pagamento externo. */
+export enum TipoPagamento {
+  COMPRA_CREDITOS = 'COMPRA_CREDITOS',
+  ASSINATURA = 'ASSINATURA',
+  UPGRADE = 'UPGRADE',
+  RENOVACAO = 'RENOVACAO',
+}
+
+/** Fase do relacionamento CRM entre psicólogo e paciente. */
+export enum CrmStatus {
+  LEAD = 'LEAD',
+  ATIVO = 'ATIVO',
+  PAUSA = 'PAUSA',
+  ALTA = 'ALTA',
+  DESISTIU = 'DESISTIU',
+}
+
+/** Prioridade de acompanhamento do paciente no funil CRM. */
+export enum CrmPrioridade {
+  BAIXA = 'BAIXA',
+  MEDIA = 'MEDIA',
+  ALTA = 'ALTA',
+  URGENTE = 'URGENTE',
+}
+
+/** Status de uma tarefa de follow-up do CRM. */
+export enum CrmFollowUpStatus {
+  PENDENTE = 'PENDENTE',
+  CONCLUIDO = 'CONCLUIDO',
+  CANCELADO = 'CANCELADO',
+}
+
+/** Resumo leve de plano para a UI. */
+export interface PlanoResumo {
+  id: string;
+  codigo: string;
+  nome: string;
+  precoMensalBRL: string;
+  cotaMensal: number;
+  precoPaygBRL: string;
+  ativo: boolean;
+  ordem: number;
+}
+
+/** Resumo leve de assinatura para a UI. */
+export interface AssinaturaResumo {
+  id: string;
+  plano: PlanoResumo;
+  status: StatusAssinatura;
+  cicloInicio: string;
+  cicloFim: string;
+  canceladaEm: string | null;
+}
+
+/** Resumo do estado de cobrança do usuário autenticado (auth/me). */
+export interface CobrancaResumo {
+  plano: PlanoResumo | null;
+  assinatura: AssinaturaResumo | null;
+  /** Créditos disponíveis na carteira (PAYG). */
+  saldo: number;
+  /** Créditos de cota já consumidos no ciclo atual. */
+  cotaUsada: number;
+  /** Créditos de cota totais do ciclo atual. */
+  cotaTotal: number;
+  /** Créditos extras (PAYG) já consumidos no ciclo atual. */
+  paygUsado: number;
+  /** Mensagem amigável se não há plano assinado. */
+  motivoSemPlano: string | null;
 }

@@ -2,11 +2,10 @@ const API_URL = process.env['NEXT_PUBLIC_API_URL'] ?? 'http://localhost:3000';
 
 interface FetchOptions extends RequestInit {
   token?: string;
-  clinicaId?: string;
 }
 
 export async function api<T = unknown>(path: string, options: FetchOptions = {}): Promise<T> {
-  const { token, clinicaId, headers: extraHeaders, ...rest } = options;
+  const { token, headers: extraHeaders, ...rest } = options;
 
   const headers: Record<string, string> = {
     'Content-Type': 'application/json',
@@ -14,7 +13,6 @@ export async function api<T = unknown>(path: string, options: FetchOptions = {})
   };
 
   if (token) headers['Authorization'] = `Bearer ${token}`;
-  if (clinicaId) headers['X-Clinica-ID'] = clinicaId;
 
   const res = await fetch(`${API_URL}/api${path}`, {
     headers,

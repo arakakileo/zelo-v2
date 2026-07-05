@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
-  ForbiddenException,
   NotFoundException,
   BadRequestException,
   UnprocessableEntityException,
@@ -9,11 +8,11 @@ import { Decimal } from '@prisma/client/runtime/library';
 import { ConfigService } from '@nestjs/config';
 import { SessoesService } from './sessoes.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
+import { ConsumoService } from '../../billing/consumo.service';
 import {
-  Papel,
   StatusSessao,
   MotorStatusSessao,
-  type TenantContext,
+  CodigoOrigemConsumo,
 } from '@zelo/contracts';
 import {
   createMockPrismaService,
@@ -24,18 +23,10 @@ describe('SessoesService', () => {
   let service: SessoesService;
   let mockPrisma: any;
   let resetPrismaMock: () => void;
+  let mockConsumo: any;
 
-  const adminCtx: TenantContext = {
-    userId: 'admin-1',
-    clinicaId: 'c1',
-    papelAtivo: Papel.ADMIN,
-  };
-
-  const psicologoCtx: TenantContext = {
-    userId: 'psico-1',
-    clinicaId: 'c1',
-    papelAtivo: Papel.PSICOLOGO,
-  };
+  const adminCtx = { userId: 'admin-1' };
+  const psicologoCtx = { userId: 'psico-1' };
 
   beforeEach(async () => {
     const prismaMock = createMockPrismaService();
@@ -43,11 +34,27 @@ describe('SessoesService', () => {
     resetPrismaMock = prismaMock.resetPrismaMock;
     const mockConfig = createMockConfigService();
 
+    mockConsumo = {
+      debitar: jest.fn().mockResolvedValue({
+        origem: CodigoOrigemConsumo.COTA,
+        novoSaldoPayg: 90,
+        cicloYyyymm: '202607',
+        cotaConsumida: 10,
+        paygConsumido: 0,
+      }),
+      estornar: jest.fn().mockResolvedValue({
+        origemDevolvida: CodigoOrigemConsumo.COTA,
+        novoSaldoPayg: 100,
+        cicloYyyymm: '202607',
+      }),
+    };
+
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         SessoesService,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: ConfigService, useValue: mockConfig },
+        { provide: ConsumoService, useValue: mockConsumo },
       ],
     }).compile();
 
@@ -105,15 +112,14 @@ describe('SessoesService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('throws ForbiddenException when PSICOLOGO tries patient from another psychologist', async () => {
-      mockPrisma.paciente.findFirst.mockResolvedValue({
-        id: 'pac-1',
-        psicologoResponsavelId: 'other-psico',
-      });
+    it('throws NotFoundException when PSICOLOGO queries a patient from another psychologist (filter excludes it)', async () => {
+      // Single-user model: query filters by psicologoResponsavelId: ctx.userId,
+      // so another psicólogo's patient is invisible (returns null) → NotFound.
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
 
       await expect(
         service.iniciarSessao(psicologoCtx, validDto),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('throws NotFoundException when test does not exist', async () => {
@@ -128,7 +134,9 @@ describe('SessoesService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('throws BadRequestException when clinic has no carteira', async () => {
+    it('throws BadRequestException when consumo.debitar fails (no carteira / no plano)', async () => {
+      // Single-user model: billing moved into ConsumoService.debitar.
+      // When the user has no carteira/assinatura, debitar throws BadRequestException.
       mockPrisma.paciente.findFirst.mockResolvedValue({
         id: 'pac-1',
         psicologoResponsavelId: 'psico-1',
@@ -137,14 +145,19 @@ describe('SessoesService', () => {
         id: 'teste-1',
         precoCreditos: 5,
       });
-      mockPrisma.carteira.findUnique.mockResolvedValue(null);
+      mockPrisma.sessaoTeste.create.mockResolvedValue({ id: 'sessao-1' });
+      mockConsumo.debitar.mockRejectedValueOnce(
+        new BadRequestException('Saldo insuficiente'),
+      );
+      // Rollback do create em caso de falha no débito
+      mockPrisma.sessaoTeste.update.mockResolvedValue({});
 
       await expect(
         service.iniciarSessao(psicologoCtx, validDto),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('throws BadRequestException when saldo is insufficient', async () => {
+    it('throws BadRequestException when saldo is insufficient (consumo.debitar rejects)', async () => {
       mockPrisma.paciente.findFirst.mockResolvedValue({
         id: 'pac-1',
         psicologoResponsavelId: 'psico-1',
@@ -153,17 +166,20 @@ describe('SessoesService', () => {
         id: 'teste-1',
         precoCreditos: 10,
       });
-      mockPrisma.carteira.findUnique.mockResolvedValue({
-        id: 'cart-1',
-        saldo: new Decimal(5),
-      });
+      mockPrisma.sessaoTeste.create.mockResolvedValue({ id: 'sessao-1' });
+      mockConsumo.debitar.mockRejectedValueOnce(
+        new BadRequestException(
+          'Saldo insuficiente. Necessário: 10 créditos e você não tem assinatura ativa.',
+        ),
+      );
+      mockPrisma.sessaoTeste.update.mockResolvedValue({});
 
       await expect(
         service.iniciarSessao(psicologoCtx, validDto),
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('debits credits and creates sessao on success', async () => {
+    it('debits credits via ConsumoService and creates sessao on success', async () => {
       mockPrisma.paciente.findFirst.mockResolvedValue({
         id: 'pac-1',
         psicologoResponsavelId: 'psico-1',
@@ -171,25 +187,25 @@ describe('SessoesService', () => {
       mockPrisma.teste.findUnique.mockResolvedValue({
         id: 'teste-1',
         precoCreditos: 10,
-      });
-      mockPrisma.carteira.findUnique.mockResolvedValue({
-        id: 'cart-1',
-        saldo: new Decimal(100),
       });
       const createdSessao = {
         id: 'sessao-1',
         pacienteId: 'pac-1',
-        clinicaId: 'c1',
+        psicologoId: 'psico-1',
         status: StatusSessao.ABERTO,
       };
       mockPrisma.sessaoTeste.create.mockResolvedValue(createdSessao);
+      mockPrisma.sessaoTeste.update.mockResolvedValue({});
 
       const result = await service.iniciarSessao(psicologoCtx, validDto);
 
       expect(result.id).toBe('sessao-1');
-      expect(mockPrisma.$transaction).toHaveBeenCalledTimes(1);
-      const carteiraCall = mockPrisma.carteira.update.mock.calls[0][0];
-      expect(carteiraCall.data.saldo).toEqual({ decrement: 10 });
+      // Billing agora via ConsumoService.debitar (não mais $transaction/carteira.update direto)
+      expect(mockConsumo.debitar).toHaveBeenCalledTimes(1);
+      const debitoCall = mockConsumo.debitar.mock.calls[0][0];
+      expect(debitoCall.userId).toBe('psico-1');
+      expect(debitoCall.creditos).toBe(10);
+      expect(debitoCall.refId).toBe('sessao-1');
     });
   });
 
@@ -207,20 +223,21 @@ describe('SessoesService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('enforces tenant filter — cross-tenant sessao is invisible', async () => {
-      // Sessão de outra clínica → findFirst com filtro clinicaId retorna null
+    it('enforces owner filter — sessão of another psicólogo is invisible', async () => {
+      // Single-user model: findFirst filters by psicologoId: ctx.userId,
+      // so a sessão owned by another psicólogo returns null → NotFound.
       mockPrisma.sessaoTeste.findFirst.mockResolvedValue(null);
 
       await expect(
-        service.finalizarSessao(adminCtx, 'sessao-outra-clinica', {
+        service.finalizarSessao(adminCtx, 'sessao-outro-psico', {
           dadosRespostas: respostasBdiIiCompletas(),
           conclusaoPsicologo: 'text',
         }),
       ).rejects.toThrow(NotFoundException);
 
       const findCall = mockPrisma.sessaoTeste.findFirst.mock.calls[0][0];
-      expect(findCall.where.clinicaId).toBe('c1');
-      expect(findCall.where.id).toBe('sessao-outra-clinica');
+      expect(findCall.where.psicologoId).toBe('admin-1');
+      expect(findCall.where.id).toBe('sessao-outro-psico');
     });
 
     it('throws BadRequestException when sessao is not ABERTO', async () => {
@@ -235,16 +252,17 @@ describe('SessoesService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('throws ForbiddenException when PSICOLOGO tries to finalize others sessao', async () => {
-      mockSessaoAberta({ psicologoId: 'other-psico' });
-      mockTesteFetch('BDI-II', 15);
+    it('throws NotFoundException when PSICOLOGO queries another psicólogos sessão (filter excludes it)', async () => {
+      // Single-user model: findFirst filters by psicologoId: ctx.userId,
+      // so a sessão owned by 'other-psico' is invisible → NotFound.
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue(null);
 
       await expect(
         service.finalizarSessao(psicologoCtx, 's1', {
           dadosRespostas: respostasBdiIiCompletas(),
           conclusaoPsicologo: 'text',
         }),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('BLOQUEIA sessão BDI-II (DEMO não-clínico) — fail-closed + estorno, persiste score para auditoria', async () => {
@@ -270,10 +288,12 @@ describe('SessoesService', () => {
       expect(updateCall.data.motorVersao).toMatch(/^\d+\.\d+\.\d+$/);
       expect(updateCall.data.motorHashRespostas).toMatch(/^[a-f0-9]{64}$/);
       expect(updateCall.data.motorItensInvalidos).toEqual([]);
-      // Estorno aconteceu (fail-closed)
-      expect(mockPrisma.carteira.update).toHaveBeenCalledTimes(1);
-      const carteiraCall = mockPrisma.carteira.update.mock.calls[0][0];
-      expect(Number(carteiraCall.data.saldo.increment)).toBe(15);
+      // Estorno aconteceu via ConsumoService (fail-closed)
+      expect(mockConsumo.estornar).toHaveBeenCalledTimes(1);
+      const estornoCall = mockConsumo.estornar.mock.calls[0][0];
+      expect(estornoCall.userId).toBe('psico-1');
+      expect(Number(estornoCall.creditos)).toBe(15);
+      expect(estornoCall.refId).toBe('s1');
     });
 
     it('BLOQUEIA sessão BDI-II (DEMO) mesmo com respostas string normalizadas — fail-closed', async () => {
@@ -367,16 +387,12 @@ describe('SessoesService', () => {
       expect(updateCall.data.motorScore).toBeNull();
       expect(updateCall.data.motorBanda).toBeNull();
 
-      // Estorno: carteira incrementada
-      expect(mockPrisma.carteira.update).toHaveBeenCalledTimes(1);
-      const carteiraCall = mockPrisma.carteira.update.mock.calls[0][0];
-      expect(Number(carteiraCall.data.saldo.increment)).toBe(15);
-
-      // Audit trail: Transacao tipo=ESTORNO
-      expect(mockPrisma.transacao.create).toHaveBeenCalledTimes(1);
-      const transacaoCall = mockPrisma.transacao.create.mock.calls[0][0];
-      expect(transacaoCall.data.tipo).toBe('ESTORNO');
-      expect(Number(transacaoCall.data.valor)).toBe(15);
+      // Estorno via ConsumoService.estornar
+      expect(mockConsumo.estornar).toHaveBeenCalledTimes(1);
+      const estornoCall = mockConsumo.estornar.mock.calls[0][0];
+      expect(estornoCall.userId).toBe('psico-1');
+      expect(Number(estornoCall.creditos)).toBe(15);
+      expect(estornoCall.refId).toBe('s1');
     });
 
     it('BLOQUEIA finalização de BDI-II com respostas malformadas (item03=99) e estorna', async () => {
@@ -400,8 +416,8 @@ describe('SessoesService', () => {
         MotorStatusSessao.BLOQUEADO_REGRAS_INDISPONIVEIS,
       );
       expect(updateCall.data.motorItensInvalidos).toContain('item03');
-      // Estorno aconteceu
-      expect(mockPrisma.carteira.update).toHaveBeenCalledTimes(1);
+      // Estorno via ConsumoService.estornar
+      expect(mockConsumo.estornar).toHaveBeenCalledTimes(1);
     });
 
     it('BLOQUEIA mesmo quando carteira ausente (sessão fica BLOQUEADO_REGRA sem estorno)', async () => {
@@ -506,10 +522,9 @@ describe('SessoesService', () => {
   // ─── cancelarSessao ────────────────────────────────────────────────────
 
   describe('cancelarSessao', () => {
-    it('cancela sessão ABERTA e estorna créditos', async () => {
+    it('cancela sessão ABERTA e estorna créditos via ConsumoService', async () => {
       mockSessaoAberta();
       mockTesteFetch('BDI-II', 15);
-      mockPrisma.carteira.findUnique.mockResolvedValue({ id: 'cart-1' });
 
       const result = await service.cancelarSessao(psicologoCtx, 's1');
 
@@ -517,12 +532,12 @@ describe('SessoesService', () => {
       // Sessão marcada como CANCELADO
       const updateCall = mockPrisma.sessaoTeste.update.mock.calls[0][0];
       expect(updateCall.data.status).toBe(StatusSessao.CANCELADO);
-      // Estorno
-      const carteiraCall = mockPrisma.carteira.update.mock.calls[0][0];
-      expect(Number(carteiraCall.data.saldo.increment)).toBe(15);
-      // Audit trail
-      const transacaoCall = mockPrisma.transacao.create.mock.calls[0][0];
-      expect(transacaoCall.data.tipo).toBe('ESTORNO');
+      // Estorno via ConsumoService.estornar
+      expect(mockConsumo.estornar).toHaveBeenCalledTimes(1);
+      const estornoCall = mockConsumo.estornar.mock.calls[0][0];
+      expect(estornoCall.userId).toBe('psico-1');
+      expect(Number(estornoCall.creditos)).toBe(15);
+      expect(estornoCall.refId).toBe('s1');
     });
 
     it('throws BadRequestException when sessao is FINALIZADO', async () => {
@@ -533,12 +548,14 @@ describe('SessoesService', () => {
       ).rejects.toThrow(BadRequestException);
     });
 
-    it('throws ForbiddenException when PSICOLOGO tries to cancel others sessao', async () => {
-      mockSessaoAberta({ psicologoId: 'other-psico' });
+    it('throws NotFoundException when PSICOLOGO queries another psicólogos sessão to cancel (filter excludes it)', async () => {
+      // Single-user model: findFirst filters by psicologoId: ctx.userId,
+      // so a sessão owned by 'other-psico' is invisible → NotFound.
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue(null);
 
       await expect(
         service.cancelarSessao(psicologoCtx, 's1'),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -554,14 +571,14 @@ describe('SessoesService', () => {
       expect(findCall.where.psicologoId).toBe('psico-1');
     });
 
-    it('ADMIN sees all sessoes in clinic', async () => {
+    it('user sees only their own sessoes (single-user: always filtered by psicologoId)', async () => {
       mockPrisma.sessaoTeste.findMany.mockResolvedValue([]);
 
       await service.listarSessoes(adminCtx);
 
       const findCall = mockPrisma.sessaoTeste.findMany.mock.calls[0][0];
-      expect(findCall.where.psicologoId).toBeUndefined();
-      expect(findCall.where.clinicaId).toBe('c1');
+      // Single-user: sempre filtra por psicologoId: ctx.userId
+      expect(findCall.where.psicologoId).toBe('admin-1');
     });
 
     it('returns pacienteId on each sessao (not just nome)', async () => {
@@ -594,12 +611,12 @@ describe('SessoesService', () => {
       expect(result).toHaveLength(2);
       const [s1, s2] = result;
       // Cada item carrega pacienteId distinto, mesmo com mesmo nome.
-      expect(s1!.pacienteId).toBe('pac-aaa');
-      expect(s2!.pacienteId).toBe('pac-bbb');
+      expect(s1!.paciente.id).toBe('pac-aaa');
+      expect(s2!.paciente.id).toBe('pac-bbb');
       // Homônimos: nomes idênticos, ids diferentes — filtro por id separa corretamente.
-      expect(s1!.pacienteNome).toBe('João Silva');
-      expect(s2!.pacienteNome).toBe('João Silva');
-      expect(s1!.pacienteId).not.toBe(s2!.pacienteId);
+      expect(s1!.paciente.nome).toBe('João Silva');
+      expect(s2!.paciente.nome).toBe('João Silva');
+      expect(s1!.paciente.id).not.toBe(s2!.paciente.id);
     });
   });
 
@@ -614,16 +631,14 @@ describe('SessoesService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('PSICOLOGO is blocked from other psychologists reports', async () => {
-      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
-        id: 's1',
-        psicologoId: 'other-psico',
-        status: StatusSessao.FINALIZADO,
-      });
+    it('PSICOLOGO querying another psicólogos report gets NotFound (filter excludes it)', async () => {
+      // Single-user model: findFirst filters by psicologoId: ctx.userId,
+      // so a sessão owned by 'other-psico' is invisible → NotFound.
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue(null);
 
       await expect(
         service.relatorioFinal(psicologoCtx, 's1'),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('returns decrypted report with motor metadata', async () => {
@@ -666,7 +681,7 @@ describe('SessoesService', () => {
         teste: { sigla: 'BDI-II', nome: 'Inventário Beck de Depressão' },
         psicologo: {
           nomeCompleto: 'Dr. Silva',
-          memberships: [{ registroProfissional: 'CRP 06/12345' }],
+          registroProfissional: 'CRP 06/12345',
         },
       });
 

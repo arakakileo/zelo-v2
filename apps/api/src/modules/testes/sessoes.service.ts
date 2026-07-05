@@ -9,7 +9,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService } from '@zelo/crypto';
-import { TenantContext, Papel, StatusSessao } from '@zelo/contracts';
+import { StatusSessao, CodigoOrigemConsumo } from '@zelo/contracts';
 import { IniciarSessaoDto } from './dto/iniciar-sessao.dto';
 import { FinalizarSessaoDto } from './dto/finalizar-sessao.dto';
 import {
@@ -17,6 +17,11 @@ import {
   type RespostasItens,
 } from './scoring/scoring.engine';
 import { MotorStatus } from './scoring/scoring.types';
+import { ConsumoService } from '../../billing/consumo.service';
+
+export interface AuthContext {
+  userId: string;
+}
 
 @Injectable()
 export class SessoesService {
@@ -26,93 +31,74 @@ export class SessoesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
+    private readonly consumo: ConsumoService,
   ) {
     this.crypto = new CryptoService(this.config.getOrThrow<string>('ENCRYPTION_KEY'));
   }
 
   /**
    * Iniciar uma sessão de teste.
-   * Debita créditos da carteira da clínica.
+   * Debita créditos via ConsumoService (cota do plano ou PAYG).
    */
-  async iniciarSessao(ctx: TenantContext, dto: IniciarSessaoDto) {
+  async iniciarSessao(ctx: AuthContext, dto: IniciarSessaoDto) {
     const paciente = await this.prisma.paciente.findFirst({
-      where: { id: dto.pacienteId, clinicaId: ctx.clinicaId, deletedAt: null },
+      where: { id: dto.pacienteId, psicologoResponsavelId: ctx.userId, deletedAt: null },
       select: { id: true, psicologoResponsavelId: true },
     });
 
     if (!paciente) {
-      throw new NotFoundException('Paciente não encontrado');
-    }
-
-    if (ctx.papelAtivo === Papel.PSICOLOGO && paciente.psicologoResponsavelId !== ctx.userId) {
-      throw new ForbiddenException('Apenas o psicólogo responsável ou ADMIN pode iniciar testes para este paciente');
+      throw new NotFoundException('Paciente não encontrado ou não é seu');
     }
 
     const teste = await this.prisma.teste.findUnique({
       where: { id: dto.testeId },
     });
-
     if (!teste) {
       throw new NotFoundException('Teste não encontrado no catálogo');
     }
 
-    // Transaction: Debitar créditos e criar sessão
-    const sessao = await this.prisma.$transaction(async (tx) => {
-      const carteira = await tx.carteira.findUnique({
-        where: { clinicaId: ctx.clinicaId },
-      });
-
-      if (!carteira) {
-        throw new BadRequestException('Clínica não possui carteira configurada');
-      }
-
-      if (carteira.saldo < teste.precoCreditos) {
-        throw new BadRequestException(`Saldo insuficiente. Preço: ${teste.precoCreditos}, Saldo atual: ${carteira.saldo}`);
-      }
-
-      // Debitar carteira
-      await tx.carteira.update({
-        where: { id: carteira.id },
-        data: { saldo: { decrement: teste.precoCreditos } },
-      });
-
-      // Registrar transação
-      await tx.transacao.create({
-        data: {
-          carteiraId: carteira.id,
-          userId: ctx.userId,
-          tipo: 'DEBITO',
-          valor: teste.precoCreditos,
-          descricao: `Aplicação teste ${teste.sigla}`,
-        },
-      });
-
-      // Criar Sessão
-      return tx.sessaoTeste.create({
-        data: {
-          pacienteId: dto.pacienteId,
-          clinicaId: ctx.clinicaId,
-          psicologoId: ctx.userId,
-          testeId: dto.testeId,
-          status: StatusSessao.ABERTO,
-          createdById: ctx.userId,
-        },
-      });
+    // Cria a sessão em estado ABERTO primeiro, sem cobrar — depois consome.
+    // (Criar antes para ter o ID da sessao para o refId)
+    const sessao = await this.prisma.sessaoTeste.create({
+      data: {
+        pacienteId: dto.pacienteId,
+        psicologoId: ctx.userId,
+        testeId: dto.testeId,
+        status: StatusSessao.ABERTO,
+        precoCobrado: teste.precoCreditos,
+        origemConsumo: CodigoOrigemConsumo.COTA,
+        createdById: ctx.userId,
+      },
     });
 
-    this.logger.log(`SessaoTeste ${sessao.id} iniciada para paciente ${dto.pacienteId}`);
-    return sessao;
+    let debitado: { origem: CodigoOrigemConsumo; novoSaldoPayg: number; cicloYyyymm: string; cotaConsumida: number; paygConsumido: number };
+    try {
+      debitado = await this.consumo.debitar({
+        userId: ctx.userId,
+        creditos: teste.precoCreditos,
+        refTipo: 'sessaoTeste',
+        refId: sessao.id,
+        descricao: `Aplicação teste ${teste.sigla}`,
+      });
+    } catch (err) {
+      // Sem saldo/cota: desfaz a sessão criada
+      await this.prisma.sessaoTeste.update({
+        where: { id: sessao.id },
+        data: { deletedAt: new Date() },
+      });
+      throw err;
+    }
+
+    // Atualiza a sessão com a origem real do consumo
+    await this.prisma.sessaoTeste.update({
+      where: { id: sessao.id },
+      data: { origemConsumo: debitado.origem },
+    });
+
+    this.logger.log(`SessaoTeste ${sessao.id} iniciada para paciente ${dto.pacienteId} (origem=${debitado.origem})`);
+    return { ...sessao, origemConsumo: debitado.origem, novoSaldoPayg: debitado.novoSaldoPayg };
   }
 
-  /**
-   * Normaliza respostas do boundary HTTP (Record<string, any>) para
-   * RespostasItens (Record<string, number>).
-   *
-   * Tolerância: aceita string numérica ("2") e converte para 2.
-   * Não-inteiros, NaN, Infinity, strings não-numéricas viram NaN — o motor
-   * os marcará como inválidos e o resultado será BLOQUEADO_REGRAS_INDISPONIVEIS
-   * (fail-closed). Nada de "número mágico".
-   */
   private normalizarRespostas(input: Record<string, unknown>): RespostasItens {
     const out: Record<string, number> = {};
     for (const [k, v] of Object.entries(input)) {
@@ -129,44 +115,17 @@ export class SessoesService {
   }
 
   /**
-   * Finalizar sessão e calcular resultado via motor de scoring SATEPSI.
-   *
-   * Fluxo:
-   *   1. Buscar sessão (tenant check via clinicaId) + teste (sigla).
-   *   2. Verificar status ABERTO e ownership.
-   *   3. Normalizar respostas e chamar motor.
-   *   4. Se motor = OK (regra PRODUCAO licenciada):
-   *        - Criptografar resultado + banda + score em payload único (envelope).
-   *        - Salvar motor* + status=FINALIZADO.
-   *   5. Se motor = DEMO (adapter não-clínico) ou BLOQUEADO_*:
-   *        - Estornar o débito inicial na carteira (incremento + Transacao ESTORNO).
-   *        - Marcar status=BLOQUEADO_REGRA + salvar motor* (observação, hash,
-   *          itens inválidos, status, e score/banda para DEMO em auditoria).
-   *        - Lançar UnprocessableEntityException — NENHUM resultado clínico é
-   *          exposto ao chamador. O 422 sinaliza que a finalização foi
-   *          bloqueada (regra indisponível ou resultado DEMO não-clínico).
-   *
-   * Princípio clínico: o sistema NUNCA persiste resultado clínico real sem
-   * regra PRODUCAO licenciada. BDI-II e similares são DEMO (fail-closed).
+   * Finalizar sessão e calcular resultado via motor SATEPSI.
+   * Em caso de bloqueio por regra, estorna via ConsumoService.
    */
-  async finalizarSessao(ctx: TenantContext, sessaoId: string, dto: FinalizarSessaoDto) {
-    // Carrega sessão (tenant check via clinicaId)
+  async finalizarSessao(ctx: AuthContext, sessaoId: string, dto: FinalizarSessaoDto) {
     const sessao = await this.prisma.sessaoTeste.findFirst({
-      where: { id: sessaoId, clinicaId: ctx.clinicaId, deletedAt: null },
-      select: {
-        id: true,
-        psicologoId: true,
-        status: true,
-        testeId: true,
-      },
+      where: { id: sessaoId, psicologoId: ctx.userId, deletedAt: null },
+      select: { id: true, psicologoId: true, status: true, testeId: true, precoCobrado: true },
     });
-
     if (!sessao) throw new NotFoundException('Sessão não encontrada');
     if (sessao.status !== StatusSessao.ABERTO) {
       throw new BadRequestException(`Sessão não está ABERTA (status: ${sessao.status})`);
-    }
-    if (ctx.papelAtivo === Papel.PSICOLOGO && sessao.psicologoId !== ctx.userId) {
-      throw new ForbiddenException('Apenas o psicólogo aplicador ou ADMIN pode finalizar');
     }
 
     const testeRow = await this.prisma.teste.findUnique({
@@ -174,19 +133,15 @@ export class SessoesService {
       select: { id: true, sigla: true, precoCreditos: true },
     });
     if (!testeRow) {
-      // Inconsistência referencial — sessao.testeId aponta para teste inexistente.
-      // Bloqueia + estorna (fail-closed).
       await this.bloquearPorInconsistencia(ctx, sessaoId, 'Teste referenciado pela sessão não existe mais');
       throw new UnprocessableEntityException('Sessão bloqueada: teste referenciado ausente no catálogo');
     }
 
     const respostas = this.normalizarRespostas(dto.dadosRespostas);
     const resultado = calcularResultado(testeRow.sigla, respostas);
-
     const conclusaoPsicologoEncrypted = this.crypto.encrypt(dto.conclusaoPsicologo);
 
     if (resultado.status === MotorStatus.OK) {
-      // ─── Sucesso: persistir resultado clínico criptografado ────────────
       const envelope = {
         score: resultado.score,
         banda: resultado.banda,
@@ -218,7 +173,7 @@ export class SessoesService {
       });
 
       this.logger.log(
-        `SessaoTeste ${sessao.id} finalizada por ${ctx.userId} — teste ${testeRow.sigla} score=${resultado.score} banda=${resultado.banda} motor=${resultado.versaoMotor}`,
+        `SessaoTeste ${sessao.id} finalizada por ${ctx.userId} — teste ${testeRow.sigla} score=${resultado.score} banda=${resultado.banda}`,
       );
       return {
         mensagem: 'Sessão finalizada com sucesso',
@@ -232,9 +187,7 @@ export class SessoesService {
       };
     }
 
-    // ─── Fail-closed: motor bloqueou ou é DEMO (não-clínico). ───────────
-    // Estornar + BLOQUEADO_REGRA. Para DEMO, o score/banda é persistido
-    // para auditoria (marcado como DEMO, nunca exposto como clínico).
+    // Fail-closed: estorna via ConsumoService + BLOQUEADO_REGRA
     const mensagemBloqueio = `Motor ${resultado.versaoMotor} ${resultado.status} para ${resultado.sigla ?? 'teste desconhecido'}: ${resultado.observacao}`;
     await this.estornarEBloquear(ctx, sessaoId, testeRow, resultado, mensagemBloqueio);
 
@@ -247,22 +200,10 @@ export class SessoesService {
     });
   }
 
-  /**
-   * Executa o estorno do débito original e marca a sessão como BLOQUEADO_REGRA.
-   *
-   * Tudo dentro de uma transação Prisma:
-   *   - SessaoTeste.status → BLOQUEADO_REGRA
-   *   - SessaoTeste.motor* preenchidos. Para status DEMO, score/banda são
-   *     persistidos para auditoria (marcados como DEMO, não OK). Para
-   *     BLOQUEADO_*, score/banda são null (fail-closed: sem resultado).
-   *   - SessaoTeste.estorno* preenchidos
-   *   - Carteira.saldo += precoCreditos
-   *   - Transacao tipo=ESTORNO registrada (audit trail)
-   */
   private async estornarEBloquear(
-    ctx: TenantContext,
+    ctx: AuthContext,
     sessaoId: string,
-    teste: { id: string; sigla: string; precoCreditos: unknown },
+    teste: { id: string; sigla: string; precoCreditos: number },
     resultado: {
       observacao: string;
       status: string;
@@ -275,30 +216,26 @@ export class SessoesService {
     },
     mensagemBloqueio: string,
   ): Promise<void> {
-    // Usa o status do motor diretamente (DEMO, BLOQUEADO_CATALOGO_INDISPONIVEL
-    // ou BLOQUEADO_REGRAS_INDISPONIVEIS). Não fazer string-matching na
-    // observacao — seria frágil e quebraria se o texto mudar.
     const statusMotor = resultado.status;
-    // Para DEMO, persistir score/banda para auditoria (não-clínico).
-    // Para BLOQUEADO_*, score/banda são null.
     const persistScore = statusMotor === MotorStatus.DEMO ? resultado.score : null;
     const persistBanda = statusMotor === MotorStatus.DEMO ? resultado.banda : null;
 
-    await this.prisma.$transaction(async (tx) => {
-      const sessao = await tx.sessaoTeste.findFirst({
-        where: { id: sessaoId, clinicaId: ctx.clinicaId, deletedAt: null },
-        select: { id: true },
+    // Estorno via ConsumoService
+    try {
+      await this.consumo.estornar({
+        userId: ctx.userId,
+        creditos: teste.precoCreditos,
+        refTipo: 'sessaoTeste',
+        refId: sessaoId,
+        motivo: mensagemBloqueio,
       });
-      if (!sessao) {
-        throw new NotFoundException('Sessão não encontrada no estorno');
-      }
+    } catch (err) {
+      this.logger.error(`Falha ao estornar sessão ${sessaoId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
 
-      const carteira = await tx.carteira.findUnique({
-        where: { clinicaId: ctx.clinicaId },
-        select: { id: true },
-      });
-
-      const baseUpdateData = {
+    await this.prisma.sessaoTeste.update({
+      where: { id: sessaoId },
+      data: {
         status: StatusSessao.BLOQUEADO_REGRA,
         motorStatus: statusMotor,
         motorVersao: resultado.versaoMotor,
@@ -308,49 +245,12 @@ export class SessoesService {
         motorHashRespostas: resultado.hashRespostas,
         motorItensInvalidos: resultado.itensInvalidos as unknown as object,
         motorObservacao: resultado.observacao,
+        estornoEm: new Date(),
+        estornoValor: teste.precoCreditos,
+        estornoMotivo: mensagemBloqueio,
+        estornadoPorId: ctx.userId,
         updatedById: ctx.userId,
-      };
-
-      if (!carteira) {
-        // Sem carteira: bloqueia sessão, não estorna. Audit trail mesmo assim.
-        await tx.sessaoTeste.update({
-          where: { id: sessaoId },
-          data: {
-            ...baseUpdateData,
-            estornoMotivo: `Bloqueio por regra (sem carteira configurada): ${mensagemBloqueio}`,
-          },
-        });
-        return;
-      }
-
-      // Creditar de volta
-      await tx.carteira.update({
-        where: { id: carteira.id },
-        data: { saldo: { increment: teste.precoCreditos as number } },
-      });
-
-      // Audit trail do estorno
-      await tx.transacao.create({
-        data: {
-          carteiraId: carteira.id,
-          userId: ctx.userId,
-          tipo: 'ESTORNO',
-          valor: teste.precoCreditos as number,
-          descricao: `Estorno sessão ${sessaoId} — ${mensagemBloqueio}`,
-        },
-      });
-
-      // Bloquear sessão
-      await tx.sessaoTeste.update({
-        where: { id: sessaoId },
-        data: {
-          ...baseUpdateData,
-          estornoEm: new Date(),
-          estornoValor: teste.precoCreditos as number,
-          estornoMotivo: mensagemBloqueio,
-          estornadoPorId: ctx.userId,
-        },
-      });
+      },
     });
 
     this.logger.warn(
@@ -358,12 +258,8 @@ export class SessoesService {
     );
   }
 
-  /**
-   * Bloqueio por inconsistência referencial (FK quebrada).
-   * Sem estorno (sem carteira para creditar).
-   */
   private async bloquearPorInconsistencia(
-    ctx: TenantContext,
+    ctx: AuthContext,
     sessaoId: string,
     motivo: string,
   ): Promise<void> {
@@ -382,28 +278,15 @@ export class SessoesService {
 
   /**
    * Cancelar uma sessão ABERTA (estorna créditos, sem chamar motor).
-   * Permite ao psicólogo/ADMIN desistir antes de finalizar.
-   *
-   * Sessões já FINALIZADAS, CANCELADAS ou BLOQUEADO_REGRA não podem ser
-   * canceladas novamente.
    */
-  async cancelarSessao(ctx: TenantContext, sessaoId: string) {
+  async cancelarSessao(ctx: AuthContext, sessaoId: string) {
     const sessao = await this.prisma.sessaoTeste.findFirst({
-      where: { id: sessaoId, clinicaId: ctx.clinicaId, deletedAt: null },
-      select: {
-        id: true,
-        psicologoId: true,
-        status: true,
-        testeId: true,
-      },
+      where: { id: sessaoId, psicologoId: ctx.userId, deletedAt: null },
+      select: { id: true, psicologoId: true, status: true, testeId: true, precoCobrado: true },
     });
-
     if (!sessao) throw new NotFoundException('Sessão não encontrada');
     if (sessao.status !== StatusSessao.ABERTO) {
       throw new BadRequestException(`Apenas sessões ABERTO podem ser canceladas (status: ${sessao.status})`);
-    }
-    if (ctx.papelAtivo === Papel.PSICOLOGO && sessao.psicologoId !== ctx.userId) {
-      throw new ForbiddenException('Apenas o psicólogo aplicador ou ADMIN pode cancelar');
     }
 
     const teste = await this.prisma.teste.findUnique({
@@ -411,37 +294,30 @@ export class SessoesService {
       select: { id: true, precoCreditos: true, sigla: true },
     });
 
-    await this.prisma.$transaction(async (tx) => {
-      const carteira = await tx.carteira.findUnique({
-        where: { clinicaId: ctx.clinicaId },
-        select: { id: true },
-      });
-      if (carteira && teste) {
-        await tx.carteira.update({
-          where: { id: carteira.id },
-          data: { saldo: { increment: teste.precoCreditos } },
+    if (teste) {
+      try {
+        await this.consumo.estornar({
+          userId: ctx.userId,
+          creditos: teste.precoCreditos,
+          refTipo: 'sessaoTeste',
+          refId: sessaoId,
+          motivo: `Cancelamento manual antes da finalização (${teste.sigla})`,
         });
-        await tx.transacao.create({
-          data: {
-            carteiraId: carteira.id,
-            userId: ctx.userId,
-            tipo: 'ESTORNO',
-            valor: teste.precoCreditos,
-            descricao: `Cancelamento sessão ${sessaoId} (${teste.sigla})`,
-          },
-        });
+      } catch (err) {
+        this.logger.error(`Falha ao estornar cancelamento de sessão ${sessaoId}: ${err instanceof Error ? err.message : String(err)}`);
       }
-      await tx.sessaoTeste.update({
-        where: { id: sessaoId },
-        data: {
-          status: StatusSessao.CANCELADO,
-          estornoEm: new Date(),
-          estornoValor: teste?.precoCreditos ?? null,
-          estornoMotivo: 'Cancelamento manual antes da finalização',
-          estornadoPorId: ctx.userId,
-          updatedById: ctx.userId,
-        },
-      });
+    }
+
+    await this.prisma.sessaoTeste.update({
+      where: { id: sessaoId },
+      data: {
+        status: StatusSessao.CANCELADO,
+        estornoEm: new Date(),
+        estornoValor: teste?.precoCreditos ?? null,
+        estornoMotivo: 'Cancelamento manual antes da finalização',
+        estornadoPorId: ctx.userId,
+        updatedById: ctx.userId,
+      },
     });
 
     this.logger.log(`SessaoTeste ${sessao.id} cancelada por ${ctx.userId}`);
@@ -451,9 +327,9 @@ export class SessoesService {
   /**
    * Ver relatório final (descriptografado).
    */
-  async relatorioFinal(ctx: TenantContext, sessaoId: string) {
+  async relatorioFinal(ctx: AuthContext, sessaoId: string) {
     const sessao = await this.prisma.sessaoTeste.findFirst({
-      where: { id: sessaoId, clinicaId: ctx.clinicaId, deletedAt: null },
+      where: { id: sessaoId, psicologoId: ctx.userId, deletedAt: null },
       select: {
         id: true,
         status: true,
@@ -475,17 +351,11 @@ export class SessoesService {
         estornoMotivo: true,
         paciente: { select: { id: true, nomeEncrypted: true, cpfEncrypted: true } },
         teste: { select: { sigla: true, nome: true } },
-        psicologo: { select: { nomeCompleto: true, memberships: { where: { clinicaId: ctx.clinicaId }, select: { registroProfissional: true } } } },
+        psicologo: { select: { nomeCompleto: true, registroProfissional: true } },
       },
     });
-
     if (!sessao) throw new NotFoundException('Sessão não encontrada');
-    if (ctx.papelAtivo === Papel.PSICOLOGO && sessao.psicologoId !== ctx.userId) {
-      throw new ForbiddenException('Sem acesso a esta sessão');
-    }
 
-    // Descriptografa o envelope JSON do resultado. Se não houver (sessão
-    // bloqueada ou nunca finalizada), retorna null — UI mostra estado vazio.
     let resultadoClinico: {
       score: number | null;
       banda: string | null;
@@ -498,9 +368,6 @@ export class SessoesService {
         const plaintext = this.crypto.decrypt(sessao.resultadoCalculadoEncrypted);
         resultadoClinico = JSON.parse(plaintext);
       } catch (err) {
-        // Falha de descriptografia (chave rotacionada, dado corrompido) — não
-        // propaga para o cliente, apenas sinaliza como ausente. Loga com
-        // contexto mínimo (sessaoId + operação), sem PII nem plaintext.
         this.logger.error(
           `Falha ao descriptografar resultado da sessão ${sessao.id} (relatorioFinal): ${err instanceof Error ? err.message : String(err)}`,
         );
@@ -518,7 +385,7 @@ export class SessoesService {
       },
       psicologo: {
         nome: sessao.psicologo.nomeCompleto,
-        registro: sessao.psicologo.memberships[0]?.registroProfissional,
+        registro: sessao.psicologo.registroProfissional,
       },
       dadosRespostas: sessao.dadosRespostas,
       resultadoClinico,
@@ -535,47 +402,38 @@ export class SessoesService {
         observacao: sessao.motorObservacao,
       },
       estorno: sessao.estornoEm
-        ? {
-            em: sessao.estornoEm,
-            valor: sessao.estornoValor,
-            motivo: sessao.estornoMotivo,
-          }
+        ? { em: sessao.estornoEm, valor: sessao.estornoValor, motivo: sessao.estornoMotivo }
         : null,
     };
   }
 
   /**
-   * Listar sessões da clínica.
+   * Listar sessões do psicólogo autenticado.
    */
-  async listarSessoes(ctx: TenantContext) {
-    const where: Record<string, unknown> = { clinicaId: ctx.clinicaId, deletedAt: null };
-    if (ctx.papelAtivo === Papel.PSICOLOGO) {
-      where['psicologoId'] = ctx.userId;
-    }
-
+  async listarSessoes(ctx: AuthContext) {
     const sessoes = await this.prisma.sessaoTeste.findMany({
-      where,
+      where: { psicologoId: ctx.userId, deletedAt: null },
       select: {
         id: true,
         status: true,
+        precoCobrado: true,
+        origemConsumo: true,
+        finalizadoEm: true,
         createdAt: true,
-        motorStatus: true,
         teste: { select: { sigla: true, nome: true } },
-        paciente: { select: { id: true, nomeEncrypted: true } },
-        psicologo: { select: { id: true, nomeCompleto: true } },
+        paciente: { select: { id: true, nomeEncrypted: true, cpfEncrypted: true } },
       },
       orderBy: { createdAt: 'desc' },
     });
-
     return sessoes.map((s) => ({
       id: s.id,
       status: s.status,
-      motorStatus: s.motorStatus,
+      precoCobrado: s.precoCobrado,
+      origemConsumo: s.origemConsumo,
+      finalizadoEm: s.finalizadoEm,
       createdAt: s.createdAt,
-      teste: s.teste.sigla,
-      pacienteId: s.paciente.id,
-      pacienteNome: this.crypto.decrypt(s.paciente.nomeEncrypted),
-      psicologoNome: s.psicologo.nomeCompleto,
+      teste: s.teste,
+      paciente: { id: s.paciente.id, nome: this.crypto.decrypt(s.paciente.nomeEncrypted) },
     }));
   }
 }

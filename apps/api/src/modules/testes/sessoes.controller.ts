@@ -1,77 +1,50 @@
 import {
-  Body,
-  Controller,
-  Get,
-  HttpCode,
-  HttpStatus,
-  Param,
-  Post,
-  Req,
-  UseGuards,
+  Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth, ApiHeader } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
-import { TenancyGuard } from '../../common/tenancy/tenancy.guard';
 import { SessoesService } from './sessoes.service';
 import { IniciarSessaoDto } from './dto/iniciar-sessao.dto';
 import { FinalizarSessaoDto } from './dto/finalizar-sessao.dto';
-import { TenantContext } from '@zelo/contracts';
 
-interface TenantRequest {
-  user: { id: string; email: string };
-  tenantContext: TenantContext;
-}
+interface AuthRequest { user: { id: string; email: string } }
 
 @ApiTags('sessoes')
-@ApiHeader({ name: 'X-Clinica-ID', description: 'UUID da clínica ativa', required: true })
-@Controller('sessoes')
-@UseGuards(AuthGuard('jwt'), TenancyGuard)
 @ApiBearerAuth()
+@Controller('sessoes')
+@UseGuards(AuthGuard('jwt'))
 export class SessoesController {
   constructor(private readonly sessoesService: SessoesService) {}
 
   @Post()
   @ApiOperation({ summary: 'Iniciar sessão de teste (debita créditos)' })
-  @ApiResponse({ status: 201, description: 'Sessão iniciada' })
-  @ApiResponse({ status: 400, description: 'Saldo insuficiente' })
-  async iniciar(@Req() req: TenantRequest, @Body() dto: IniciarSessaoDto) {
-    return this.sessoesService.iniciarSessao(req.tenantContext, dto);
+  async iniciar(@Req() req: AuthRequest, @Body() dto: IniciarSessaoDto) {
+    return this.sessoesService.iniciarSessao({ userId: req.user.id }, dto);
   }
 
   @Get()
-  @ApiOperation({ summary: 'Listar sessões da clínica' })
-  @ApiResponse({ status: 200, description: 'Lista de sessões' })
-  async listar(@Req() req: TenantRequest) {
-    return this.sessoesService.listarSessoes(req.tenantContext);
+  @ApiOperation({ summary: 'Listar minhas sessões' })
+  async listar(@Req() req: AuthRequest) {
+    return this.sessoesService.listarSessoes({ userId: req.user.id });
   }
 
   @Post(':id/finalizar')
   @HttpCode(HttpStatus.OK)
   @ApiOperation({ summary: 'Finalizar sessão e registrar respostas' })
-  @ApiResponse({ status: 200, description: 'Sessão finalizada' })
-  async finalizar(
-    @Req() req: TenantRequest,
-    @Param('id') id: string,
-    @Body() dto: FinalizarSessaoDto,
-  ) {
-    return this.sessoesService.finalizarSessao(req.tenantContext, id, dto);
+  async finalizar(@Req() req: AuthRequest, @Param('id') id: string, @Body() dto: FinalizarSessaoDto) {
+    return this.sessoesService.finalizarSessao({ userId: req.user.id }, id, dto);
   }
 
   @Post(':id/cancelar')
   @HttpCode(HttpStatus.OK)
-  @ApiOperation({ summary: 'Cancelar sessão aberta (estorna créditos)' })
-  @ApiResponse({ status: 200, description: 'Sessão cancelada e créditos estornados' })
-  @ApiResponse({ status: 400, description: 'Sessão não está ABERTA' })
-  @ApiResponse({ status: 403, description: 'Sem permissão' })
-  @ApiResponse({ status: 404, description: 'Sessão não encontrada' })
-  async cancelar(@Req() req: TenantRequest, @Param('id') id: string) {
-    return this.sessoesService.cancelarSessao(req.tenantContext, id);
+  @ApiOperation({ summary: 'Cancelar sessão ABERTA' })
+  async cancelar(@Req() req: AuthRequest, @Param('id') id: string) {
+    return this.sessoesService.cancelarSessao({ userId: req.user.id }, id);
   }
 
   @Get(':id/relatorio')
-  @ApiOperation({ summary: 'Ver relatório completo da sessão (descriptografado)' })
-  @ApiResponse({ status: 200, description: 'Relatório da sessão' })
-  async relatorio(@Req() req: TenantRequest, @Param('id') id: string) {
-    return this.sessoesService.relatorioFinal(req.tenantContext, id);
+  @ApiOperation({ summary: 'Relatório final (descriptografado)' })
+  async relatorio(@Req() req: AuthRequest, @Param('id') id: string) {
+    return this.sessoesService.relatorioFinal({ userId: req.user.id }, id);
   }
 }

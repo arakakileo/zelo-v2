@@ -7,7 +7,6 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PacientesService } from './pacientes.service';
 import { PrismaService } from '../../common/prisma/prisma.service';
-import { Papel, type TenantContext } from '@zelo/contracts';
 import {
   createMockPrismaService,
   createMockConfigService,
@@ -18,17 +17,8 @@ describe('PacientesService', () => {
   let mockPrisma: any;
   let resetPrismaMock: () => void;
 
-  const adminCtx: TenantContext = {
-    userId: 'admin-1',
-    clinicaId: 'c1',
-    papelAtivo: Papel.ADMIN,
-  };
-
-  const psicologoCtx: TenantContext = {
-    userId: 'psico-1',
-    clinicaId: 'c1',
-    papelAtivo: Papel.PSICOLOGO,
-  };
+  const adminCtx = { userId: 'admin-1' };
+  const psicologoCtx = { userId: 'psico-1' };
 
   beforeEach(async () => {
     const prismaMock = createMockPrismaService();
@@ -96,7 +86,7 @@ describe('PacientesService', () => {
   });
 
   describe('listarPacientes', () => {
-    it('ADMIN sees all patients in the clinic', async () => {
+    it('ADMIN is still scoped to their own patients (single-user: always filtered by psicologoResponsavelId)', async () => {
       const { CryptoService } = await import('@zelo/crypto');
       const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
 
@@ -107,16 +97,16 @@ describe('PacientesService', () => {
           cpfEncrypted: crypto.encrypt('12345678900'),
           dataNascimento: null,
           createdAt: new Date(),
-          psicologoResponsavel: { id: 'psico-1', nomeCompleto: 'Dr. Silva' },
+          psicologoResponsavel: { id: 'admin-1', nomeCompleto: 'Dr. Silva' },
         },
       ]);
 
       const result = await service.listarPacientes(adminCtx);
 
       const findCall = mockPrisma.paciente.findMany.mock.calls[0][0];
-      expect(findCall.where.clinicaId).toBe('c1');
-      // ADMIN should NOT be filtered by psicologoResponsavelId
-      expect(findCall.where.psicologoResponsavelId).toBeUndefined();
+      // Single-user: sempre filtra por psicologoResponsavelId: ctx.userId
+      expect(findCall.where.psicologoResponsavelId).toBe('admin-1');
+      expect(findCall.where.clinicaId).toBeUndefined();
       expect(result).toHaveLength(1);
     });
 
@@ -183,15 +173,14 @@ describe('PacientesService', () => {
       ).rejects.toThrow(NotFoundException);
     });
 
-    it('throws ForbiddenException when PSICOLOGO tries to remove others patient', async () => {
-      mockPrisma.paciente.findFirst.mockResolvedValue({
-        id: 'p1',
-        psicologoResponsavelId: 'other-psico',
-      });
+    it('PSICOLOGO querying another psicólogos patient to remove gets NotFound (filter excludes it)', async () => {
+      // Single-user model: findFirst filters by psicologoResponsavelId: ctx.userId,
+      // so another psicólogo's patient is invisible → NotFound.
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
 
       await expect(
         service.removerPaciente(psicologoCtx, 'p1'),
-      ).rejects.toThrow(ForbiddenException);
+      ).rejects.toThrow(NotFoundException);
     });
 
     it('ADMIN can soft-delete any patient', async () => {
