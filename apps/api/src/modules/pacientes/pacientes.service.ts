@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException, ConflictException, NotFoundException, Logger } from '@nestjs/common';
+import { Injectable, ForbiddenException, ConflictException, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService, BlindIndexService } from '@zelo/crypto';
@@ -29,6 +29,7 @@ export class PacientesService {
    */
   async criarPaciente(ctx: AuthContext, dto: CriarPacienteDto) {
     const cpfDigits = dto.cpf.replace(/\D/g, '');
+    this.validarCpf(cpfDigits);
     const cpfHash = this.blindIndex.hashCpf(cpfDigits);
 
     // Uniqueness por psicólogo
@@ -256,6 +257,42 @@ export class PacientesService {
     });
     if (!p) throw new NotFoundException('Paciente não encontrado');
     return p;
+  }
+
+  /**
+   * Valida CPF: 11 dígitos, não-todos-iguais, e check digits (dígitos verificadores) corretos.
+   * Lança BadRequestException com mensagem amigável se inválido.
+   */
+  private validarCpf(cpfDigits: string): void {
+    if (cpfDigits.length !== 11) {
+      throw new BadRequestException('CPF inválido. Confira os 11 dígitos e tente novamente.');
+    }
+
+    // Rejeita CPFs com todos os dígitos iguais (ex: 111.111.111-11)
+    if (/^(\d)\1{10}$/.test(cpfDigits)) {
+      throw new BadRequestException('CPF inválido. Confira os 11 dígitos e tente novamente.');
+    }
+
+    // Validação dos dígitos verificadores (DV1 e DV2)
+    let soma1 = 0;
+    for (let i = 0; i < 9; i++) {
+      soma1 += parseInt(cpfDigits.charAt(i), 10) * (10 - i);
+    }
+    const dv1Calc = ((soma1 * 10) % 11) % 10;
+    const dv1 = parseInt(cpfDigits.charAt(9), 10);
+    if (dv1 !== dv1Calc) {
+      throw new BadRequestException('CPF inválido. Confira os 11 dígitos e tente novamente.');
+    }
+
+    let soma2 = 0;
+    for (let i = 0; i < 10; i++) {
+      soma2 += parseInt(cpfDigits.charAt(i), 10) * (11 - i);
+    }
+    const dv2Calc = ((soma2 * 10) % 11) % 10;
+    const dv2 = parseInt(cpfDigits.charAt(10), 10);
+    if (dv2 !== dv2Calc) {
+      throw new BadRequestException('CPF inválido. Confira os 11 dígitos e tente novamente.');
+    }
   }
 
   private mapPaciente(id: string, nome: string, cpf: string, dataNascimento: Date | null, createdAt: Date) {

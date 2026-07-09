@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   ConflictException,
   NotFoundException,
+  BadRequestException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PacientesService } from './pacientes.service';
@@ -41,7 +42,7 @@ describe('PacientesService', () => {
   describe('criarPaciente', () => {
     const validDto = {
       nome: 'João Silva',
-      cpf: '12345678900',
+      cpf: '52998224725',
     };
 
     it('creates a patient with encrypted PII', async () => {
@@ -57,9 +58,27 @@ describe('PacientesService', () => {
       const createCall = mockPrisma.paciente.create.mock.calls[0][0];
       // PII must be encrypted, not plaintext
       expect(createCall.data.nomeEncrypted).not.toBe('João Silva');
-      expect(createCall.data.cpfEncrypted).not.toBe('12345678900');
+      expect(createCall.data.cpfEncrypted).not.toBe('52998224725');
       expect(createCall.data.cpfHash).toBeDefined();
       expect(result.nome).toBe('João Silva');
+    });
+
+    it('throws BadRequestException for invalid CPF (too short)', async () => {
+      await expect(
+        service.criarPaciente(adminCtx, { nome: 'Test', cpf: '1234' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException for CPF with wrong check digits (11 digits but invalid)', async () => {
+      await expect(
+        service.criarPaciente(adminCtx, { nome: 'Test', cpf: '12345678900' }),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('throws BadRequestException for CPF with all same digits (11111111111)', async () => {
+      await expect(
+        service.criarPaciente(adminCtx, { nome: 'Test', cpf: '11111111111' }),
+      ).rejects.toThrow(BadRequestException);
     });
 
     it('throws ConflictException on duplicate CPF within clinic', async () => {

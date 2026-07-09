@@ -11,7 +11,7 @@ interface AuthRequest { user: { id: string; email: string } }
 
 @ApiTags('sessoes')
 @ApiBearerAuth()
-@Controller('sessoes')
+@Controller('testes/sessoes')
 @UseGuards(AuthGuard('jwt'))
 export class SessoesController {
   constructor(private readonly sessoesService: SessoesService) {}
