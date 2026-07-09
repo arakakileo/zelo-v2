@@ -1,6 +1,5 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import {
-  ForbiddenException,
   ConflictException,
   NotFoundException,
   BadRequestException,

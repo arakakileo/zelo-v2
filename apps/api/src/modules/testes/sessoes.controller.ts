@@ -1,7 +1,7 @@
 import {
   Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, UseGuards,
 } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagger';
+import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
 import { SessoesService } from './sessoes.service';
 import { IniciarSessaoDto } from './dto/iniciar-sessao.dto';

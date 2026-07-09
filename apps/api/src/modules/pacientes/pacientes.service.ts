@@ -1,4 +1,4 @@
-import { Injectable, ForbiddenException, ConflictException, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import { Injectable, ConflictException, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService, BlindIndexService } from '@zelo/crypto';
