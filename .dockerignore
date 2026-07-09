@@ -1,0 +1,14 @@
+# Local/dev artifacts
+.git
+node_modules
+**/node_modules
+.next
+**/.next
+dist
+**/dist
+.env
+.env.*
+
+# Stale untracked route directory from the old clinic layout.
+# The app now lives under apps/web/src/app/app/.
+apps/web/src/app/clinica/

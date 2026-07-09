@@ -64,6 +64,32 @@ export interface TesteCatalogo {
   nome: string;
   sigla: string;
   precoCreditos: number;
+  slug?: string | null;
+  manualRequired?: boolean | null;
+  structuredModel?: string | null;
+}
+
+export interface CatalogEntryEstruturado {
+  name: string;
+  slug: string;
+  manualRequired: boolean;
+  applicationActions: Array<{ key: string; label: string }>;
+  fields: Array<{ key: string; label: string }>;
+  expectedOutputs: string[];
+  pendingMessage: string;
+}
+
+export interface ProtocoloEstruturado {
+  id: null;
+  name: string;
+  slug: string;
+  tests: string[];
+  description: string;
+}
+
+export interface CatalogoEstruturadoResponse {
+  tests: CatalogEntryEstruturado[];
+  protocols: ProtocoloEstruturado[];
 }
 
 export interface RelatorioSessao {

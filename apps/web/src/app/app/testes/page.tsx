@@ -7,6 +7,7 @@ import {
   PacienteResumo,
   SessaoResumo,
   TesteCatalogo,
+  CatalogoEstruturadoResponse,
   buttonPrimaryClass,
   formatCredits,
   formatDateTime,
@@ -22,6 +23,7 @@ export default function TestesPage() {
   const router = useRouter();
   const token = useRequireAuth();
   const [testes, setTestes] = useState<TesteCatalogo[]>([]);
+  const [catalogoEstruturado, setCatalogoEstruturado] = useState<CatalogoEstruturadoResponse | null>(null);
   const [pacientes, setPacientes] = useState<PacienteResumo[]>([]);
   const [sessoes, setSessoes] = useState<SessaoResumo[]>([]);
   const [loading, setLoading] = useState(true);
@@ -32,12 +34,14 @@ export default function TestesPage() {
 
   const load = async () => {
     if (!token) return;
-    const [testesData, pacientesData, sessoesData] = await Promise.all([
+    const [testesData, catalogoData, pacientesData, sessoesData] = await Promise.all([
       safeApi<TesteCatalogo[]>(router, '/testes', { token }),
+      safeApi<CatalogoEstruturadoResponse>(router, '/testes/catalogo-estruturado', { token }).catch(() => null),
       safeApi<PacienteResumo[]>(router, '/pacientes', { token }),
       safeApi<SessaoResumo[]>(router, '/testes/sessoes', { token }),
     ]);
     setTestes(testesData);
+    setCatalogoEstruturado(catalogoData);
     setPacientes(pacientesData);
     setSessoes(sessoesData);
   };
@@ -73,6 +77,11 @@ export default function TestesPage() {
     }
   }
 
+  // Match structured definitions with DB test entries by slug
+  const estruturadosBySlug = new Map(
+    (catalogoEstruturado?.tests ?? []).map((t) => [t.slug, t]),
+  );
+
   return (
     <section className="grid gap-6 xl:grid-cols-[0.95fr_1.05fr]">
       <div className="space-y-6">
@@ -103,6 +112,7 @@ export default function TestesPage() {
               {testes.map((teste) => (
                 <option key={teste.id} value={teste.id}>
                   {teste.sigla} · {teste.nome}
+                  {teste.slug ? ' (estruturado)' : ''}
                 </option>
               ))}
             </select>
@@ -127,26 +137,63 @@ export default function TestesPage() {
         </form>
 
         <div className={glassCard + ' p-6'}>
-          <p className="text-sm text-white/40">Catálogo</p>
+          <div className="flex items-center justify-between">
+            <p className="text-sm text-white/40">Catálogo</p>
+            {catalogoEstruturado && (
+              <span className="text-xs text-violet-300/60">
+                {catalogoEstruturado.tests.length} estruturados · {catalogoEstruturado.protocols.length} baterias
+              </span>
+            )}
+          </div>
           <div className="mt-4 space-y-3">
             {loading ? (
               <p className="text-sm text-white/40">Carregando catálogo...</p>
             ) : testes.length === 0 ? (
               <p className="text-sm text-white/40">Nenhum teste disponível no catálogo.</p>
             ) : (
-              testes.map((teste) => (
-                <div key={teste.id} className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div>
-                      <p className="font-medium text-white">{teste.nome}</p>
-                      <p className="mt-1 text-sm text-white/45">{teste.sigla}</p>
+              testes.map((teste) => {
+                const estruturado = teste.slug ? estruturadosBySlug.get(teste.slug) : undefined;
+                return (
+                  <div key={teste.id} className="rounded-xl border border-white/10 bg-white/[0.04] p-4">
+                    <div className="flex items-start justify-between gap-3">
+                      <div className="flex-1">
+                        <div className="flex items-center gap-2">
+                          <p className="font-medium text-white">{teste.nome}</p>
+                          {estruturado && (
+                            <span className="rounded-full border border-violet-500/30 bg-violet-600/10 px-2 py-0.5 text-[10px] text-violet-200">
+                              estruturado
+                            </span>
+                          )}
+                          {teste.manualRequired && (
+                            <span className="rounded-full border border-amber-500/30 bg-amber-600/10 px-2 py-0.5 text-[10px] text-amber-200">
+                              manual
+                            </span>
+                          )}
+                        </div>
+                        <p className="mt-1 text-sm text-white/45">{teste.sigla}</p>
+                        {estruturado && (
+                          <div className="mt-2 space-y-1">
+                            {estruturado.fields.length > 0 && (
+                              <p className="text-xs text-white/35">
+                                Campos: {estruturado.fields.map((f) => f.label).join(', ')}
+                              </p>
+                            )}
+                            {estruturado.applicationActions.length > 0 && (
+                              <p className="text-xs text-white/35">
+                                Ações: {estruturado.applicationActions.map((a) => a.label).join(', ')}
+                              </p>
+                            )}
+                            <p className="text-xs text-amber-300/50">{estruturado.pendingMessage}</p>
+                          </div>
+                        )}
+                      </div>
+                      <span className="rounded-full border border-violet-500/20 bg-violet-600/10 px-3 py-1 text-xs text-violet-200">
+                        {formatCredits(teste.precoCreditos)} créditos
+                      </span>
                     </div>
-                    <span className="rounded-full border border-violet-500/20 bg-violet-600/10 px-3 py-1 text-xs text-violet-200">
-                      {formatCredits(teste.precoCreditos)} créditos
-                    </span>
                   </div>
-                </div>
-              ))
+                );
+              })
             )}
           </div>
         </div>

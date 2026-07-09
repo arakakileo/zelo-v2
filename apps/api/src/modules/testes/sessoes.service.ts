@@ -18,6 +18,7 @@ import {
 } from './scoring/scoring.engine';
 import { MotorStatus } from './scoring/scoring.types';
 import { ConsumoService } from '../../billing/consumo.service';
+import { ClinicalTestDefinitionService } from './clinical-test-definitions';
 
 export interface AuthContext {
   userId: string;
@@ -27,6 +28,7 @@ export interface AuthContext {
 export class SessoesService {
   private readonly logger = new Logger(SessoesService.name);
   private readonly crypto: CryptoService;
+  private readonly clinicalDefinitions = new ClinicalTestDefinitionService();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -130,11 +132,31 @@ export class SessoesService {
 
     const testeRow = await this.prisma.teste.findUnique({
       where: { id: sessao.testeId },
-      select: { id: true, sigla: true, precoCreditos: true },
+      select: { id: true, sigla: true, precoCreditos: true, slug: true, nome: true },
     });
     if (!testeRow) {
       await this.bloquearPorInconsistencia(ctx, sessaoId, 'Teste referenciado pela sessão não existe mais');
       throw new UnprocessableEntityException('Sessão bloqueada: teste referenciado ausente no catálogo');
+    }
+
+    // Normaliza payload estruturado se o teste tem definição clínica (Project Gaia — Fase 2)
+    let dadosRespostasNormalizados: object = dto.dadosRespostas as object;
+    let structuredEnvelope: Record<string, unknown> | null = null;
+    if (testeRow.slug) {
+      const definition = this.clinicalDefinitions.getDefinitionBySlug(testeRow.slug);
+      if (definition) {
+        const prepared = this.clinicalDefinitions.prepareRecordPayload(
+          definition.name,
+          dto.dadosRespostas as Record<string, unknown>,
+        );
+        if (prepared) {
+          dadosRespostasNormalizados = prepared as unknown as object;
+          structuredEnvelope = this.clinicalDefinitions.buildStructuredNormativeSummary(
+            definition.name,
+            prepared.rawScores ?? {},
+          ) as unknown as Record<string, unknown>;
+        }
+      }
     }
 
     const respostas = this.normalizarRespostas(dto.dadosRespostas);
@@ -155,7 +177,9 @@ export class SessoesService {
         where: { id: sessaoId },
         data: {
           status: StatusSessao.FINALIZADO,
-          dadosRespostas: dto.dadosRespostas as object,
+          dadosRespostas: structuredEnvelope
+            ? { raw: dadosRespostasNormalizados, structured: structuredEnvelope }
+            : dadosRespostasNormalizados,
           resultadoCalculadoEncrypted,
           conclusaoPsicologoEncrypted,
           motorVersao: resultado.versaoMotor,

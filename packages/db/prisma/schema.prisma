@@ -445,6 +445,23 @@ model Teste {
   sigla           String        @unique @db.VarChar(20)
   precoCreditos   Int
 
+  // ─── Catálogo estruturado (Project Gaia — Fase 1) ───────────────────
+  /// Slug para matching com definições estruturadas (ex: "wasi", "ravlt").
+  /// Null para testes legados sem definição estruturada.
+  slug            String?       @db.VarChar(60)
+  /// Se true, conversões normativas finais dependem de manual/tabela licenciada.
+  manualRequired  Boolean?      @default(false)
+  /// Ações guiadas de aplicação (array de { key, label }).
+  applicationActions Json?
+  /// Campos de entrada estruturados (array de { key, label }).
+  fields          Json?
+  /// Saídas esperadas pelo resumo estruturado (array de strings).
+  expectedOutputs Json?
+  /// Mensagem exibida quando o resultado depende de manual.
+  pendingMessage  String?       @db.Text
+  /// Identificador do modelo estruturado (ex: "wasi", "bpa2", "generic_manual").
+  structuredModel String?       @db.VarChar(60)
+
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
 
