@@ -7,6 +7,8 @@ import {
   PacienteDetalhe,
   PacienteEndereco,
   SessaoResumo,
+  SessaoResumoApi,
+  adaptarSessoesResumo,
   glassCard,
   maskCpf,
   safeApi,
@@ -111,8 +113,8 @@ export default function PacienteDetalhePage({
 
   const reloadSessoes = useCallback(async () => {
     if (!token) return;
-    const data = await safeApi<SessaoResumo[]>(router, '/testes/sessoes', { token });
-    setSessoes(data);
+    const data = await safeApi<SessaoResumoApi[]>(router, '/testes/sessoes', { token });
+    setSessoes(adaptarSessoesResumo(data));
   }, [token, router]);
 
   const reloadCrm = useCallback(async () => {
@@ -206,7 +208,7 @@ export default function PacienteDetalhePage({
       const secondary = await Promise.allSettled([
         safeApi<PacienteContato[]>(router, `/pacientes/${pacienteId}/contatos`, { token }),
         safeApi<PacienteEndereco[]>(router, `/pacientes/${pacienteId}/enderecos`, { token }),
-        safeApi<SessaoResumo[]>(router, '/testes/sessoes', { token }),
+        safeApi<SessaoResumoApi[]>(router, '/testes/sessoes', { token }),
         safeApi<CrmResumo>(router, `/pacientes/${pacienteId}/crm`, { token }),
       ]);
 
@@ -215,7 +217,7 @@ export default function PacienteDetalhePage({
 
       if (rContatos.status === 'fulfilled') setContatos(rContatos.value);
       if (rEnderecos.status === 'fulfilled') setEnderecos(rEnderecos.value);
-      if (rSessoes.status === 'fulfilled') setSessoes(rSessoes.value);
+      if (rSessoes.status === 'fulfilled') setSessoes(adaptarSessoesResumo(rSessoes.value));
       if (rCrm.status === 'fulfilled') {
         setCrm(rCrm.value);
         setCrmError(null);

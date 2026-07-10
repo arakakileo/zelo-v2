@@ -56,9 +56,11 @@ export function AbaSessoes({ state }: Props) {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <p className="font-medium text-white">{sessao.teste}</p>
-                  <p className="mt-1 text-sm text-white/50">
-                    Aplicado por {sessao.psicologoNome}
-                  </p>
+                  {sessao.psicologoNome && (
+                    <p className="mt-1 text-sm text-white/50">
+                      Aplicado por {sessao.psicologoNome}
+                    </p>
+                  )}
                 </div>
                 <div className="flex flex-col items-end gap-1">
                   <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/55">

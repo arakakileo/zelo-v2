@@ -6,8 +6,10 @@ import { useEffect, useState, type FormEvent } from 'react';
 import {
   PacienteResumo,
   SessaoResumo,
+  SessaoResumoApi,
   TesteCatalogo,
   CatalogoEstruturadoResponse,
+  adaptarSessoesResumo,
   buttonPrimaryClass,
   formatCredits,
   formatDateTime,
@@ -34,16 +36,16 @@ export default function TestesPage() {
 
   const load = async () => {
     if (!token) return;
-    const [testesData, catalogoData, pacientesData, sessoesData] = await Promise.all([
+    const [testesData, catalogoData, pacientesData, sessoesRaw] = await Promise.all([
       safeApi<TesteCatalogo[]>(router, '/testes', { token }),
       safeApi<CatalogoEstruturadoResponse>(router, '/testes/catalogo-estruturado', { token }).catch(() => null),
       safeApi<PacienteResumo[]>(router, '/pacientes', { token }),
-      safeApi<SessaoResumo[]>(router, '/testes/sessoes', { token }),
+      safeApi<SessaoResumoApi[]>(router, '/testes/sessoes', { token }).catch(() => [] as SessaoResumoApi[]),
     ]);
     setTestes(testesData);
     setCatalogoEstruturado(catalogoData);
     setPacientes(pacientesData);
-    setSessoes(sessoesData);
+    setSessoes(adaptarSessoesResumo(sessoesRaw));
   };
 
   useEffect(() => {
@@ -224,7 +226,9 @@ export default function TestesPage() {
                   <div>
                     <p className="font-medium text-white">{sessao.teste}</p>
                     <p className="mt-1 text-sm text-white/45">{sessao.pacienteNome}</p>
-                    <p className="mt-1 text-sm text-white/35">Psicólogo: {sessao.psicologoNome}</p>
+                    {sessao.psicologoNome && (
+                      <p className="mt-1 text-sm text-white/35">Psicólogo: {sessao.psicologoNome}</p>
+                    )}
                   </div>
                   <div className="flex flex-col items-end gap-1">
                     <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/60">

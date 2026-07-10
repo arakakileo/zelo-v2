@@ -618,6 +618,38 @@ describe('SessoesService', () => {
       expect(s2!.paciente.nome).toBe('João Silva');
       expect(s1!.paciente.id).not.toBe(s2!.paciente.id);
     });
+
+    it('listarSessoes returns nested objects (contract: frontend must use adaptarSessoesResumo)', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.sessaoTeste.findMany.mockResolvedValue([
+        {
+          id: 's-contract',
+          status: StatusSessao.ABERTO,
+          precoCobrado: new Decimal(1),
+          origemConsumo: CodigoOrigemConsumo.COTA,
+          finalizadoEm: null,
+          createdAt: new Date('2026-07-10T00:00:00.000Z'),
+          teste: { sigla: 'BDI-II', nome: 'Inventário Beck de Depressão' },
+          paciente: { id: 'pac-contract', nomeEncrypted: crypto.encrypt('Teste Contract') },
+        },
+      ]);
+
+      const result = await service.listarSessoes(adminCtx);
+
+      // CONTRACT: backend returns nested objects, NOT flat strings.
+      // Frontend MUST apply adaptarSessoesResumo() before rendering.
+      // Rendering raw .teste as React child = "Objects are not valid as a React child".
+      const item = result[0]!;
+      expect(typeof item.teste).toBe('object');
+      expect(item.teste).not.toBeInstanceOf(String);
+      expect(item.teste).toEqual({ sigla: 'BDI-II', nome: 'Inventário Beck de Depressão' });
+      expect(typeof item.paciente).toBe('object');
+      expect(item.paciente).toEqual({ id: 'pac-contract', nome: 'Teste Contract' });
+      // motorStatus is NOT included in list response (only in /relatorio)
+      expect(item).not.toHaveProperty('motorStatus');
+    });
   });
 
   // ─── relatorioFinal ────────────────────────────────────────────────────
