@@ -1,13 +1,13 @@
 import { Module } from '@nestjs/common';
-import { PrismaService } from '../common/prisma/prisma.service';
 import { ConsumoService } from './consumo.service';
+import { BillingContextService } from './billing-context.service';
 import { PlanosController } from './planos.controller';
 import { AssinaturasController } from './assinaturas.controller';
 import { PagamentosController } from './pagamentos.controller';
 
 @Module({
   controllers: [PlanosController, AssinaturasController, PagamentosController],
-  providers: [ConsumoService],
-  exports: [ConsumoService],
+  providers: [ConsumoService, BillingContextService],
+  exports: [ConsumoService, BillingContextService],
 })
 export class BillingModule {}

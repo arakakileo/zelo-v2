@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, NotFoundException, Param, Post, Req, UseGuards } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, NotFoundException, Post, Req, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { PrismaService } from '../common/prisma/prisma.service';
 import { StatusAssinatura } from '@zelo/contracts';
@@ -38,6 +38,7 @@ export class AssinaturasController {
         status: StatusAssinatura.ATIVA,
         cicloInicio: inicio,
         cicloFim: fim,
+        proximaRenovacao: fim,
       },
       include: { plano: true },
     });

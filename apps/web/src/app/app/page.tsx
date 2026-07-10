@@ -6,6 +6,8 @@ import { useEffect, useMemo, useState } from 'react';
 import {
   PacienteResumo,
   SessaoResumo,
+  SessaoResumoApi,
+  adaptarSessoesResumo,
   buttonPrimaryClass,
   cn,
   formatCredits,
@@ -31,11 +33,11 @@ export default function PainelPage() {
 
     Promise.all([
       safeApi<PacienteResumo[]>(router, '/pacientes', { token }),
-      safeApi<SessaoResumo[]>(router, '/testes/sessoes', { token }),
+      safeApi<SessaoResumoApi[]>(router, '/testes/sessoes', { token }),
     ])
-      .then(([pacientesData, sessoesData]) => {
+      .then(([pacientesData, sessoesRaw]) => {
         setPacientes(pacientesData);
-        setSessoes(sessoesData);
+        setSessoes(adaptarSessoesResumo(sessoesRaw));
       })
       .catch((err) =>
         setError(err instanceof Error ? err.message : 'Erro ao carregar painel'),
@@ -44,21 +46,24 @@ export default function PainelPage() {
   }, [router, token]);
 
   const recentItems = useMemo(() => {
-    return [
-      ...sessoes.slice(0, 3).map((sessao) => ({
-        id: sessao.id,
-        title: `${sessao.teste} · ${sessao.pacienteNome}`,
-        subtitle: `${sessao.psicologoNome} • ${sessao.status}`,
-        date: formatDateTime(sessao.createdAt),
-      })),
-      ...pacientes.slice(0, 2).map((paciente) => ({
-        id: paciente.id,
-        title: `Paciente cadastrado: ${paciente.nome}`,
-        subtitle:
-          paciente.psicologoResponsavel?.nomeCompleto ?? 'Sem responsável identificado',
-        date: formatDateTime(paciente.createdAt),
-      })),
-    ].slice(0, 5);
+    const recentSessoes = sessoes.slice(0, 3).map((sessao) => ({
+      id: sessao.id,
+      href: `/app/sessoes/${sessao.id}`,
+      title: `${sessao.teste || 'Sessão'} · ${sessao.pacienteNome || 'Paciente'}`,
+      subtitle: sessao.pacienteNome ? 'Sessão aplicada' : 'Sessão',
+      date: formatDateTime(sessao.createdAt),
+      kind: 'sessao' as const,
+    }));
+    const recentPacientes = pacientes.slice(0, 2).map((paciente) => ({
+      id: paciente.id,
+      href: `/app/pacientes/${paciente.id}`,
+      title: `Paciente cadastrado: ${paciente.nome}`,
+      subtitle:
+        paciente.psicologoResponsavel?.nomeCompleto ?? 'Sem responsável identificado',
+      date: formatDateTime(paciente.createdAt),
+      kind: 'paciente' as const,
+    }));
+    return [...recentSessoes, ...recentPacientes].slice(0, 5);
   }, [pacientes, sessoes]);
 
   if (!token || loading) {
@@ -66,9 +71,13 @@ export default function PainelPage() {
   }
 
   const saldo = saldoTotal(user?.carteira ?? null);
-  const cotaTotal = user?.assinatura?.plano?.cotaMensal ?? 0;
+  const plano = user?.assinatura?.plano ?? null;
+  const cotaTotal = plano?.cotaMensal ?? 0;
   const cotaUsada = user?.assinatura?.cotaUsada ?? 0;
+  const paygUsado = user?.paygUsado ?? 0;
   const cotaRestante = Math.max(0, cotaTotal - cotaUsada);
+  const temAtividade = pacientes.length > 0 || sessoes.length > 0;
+  const motivoSemPlano = user?.motivoSemPlano ?? null;
 
   return (
     <section className="space-y-6">
@@ -86,7 +95,7 @@ export default function PainelPage() {
           value={`${formatCredits(saldo)}`}
           subtitle={
             cotaTotal > 0
-              ? `${formatCredits(cotaRestante)} cota restante`
+              ? `${formatCredits(cotaRestante)} cota restante · ${formatCredits(paygUsado)} extras PAYG`
               : 'Saldo disponível'
           }
         />
@@ -104,18 +113,42 @@ export default function PainelPage() {
             </span>
           </div>
 
-          {recentItems.length === 0 ? (
+          {!temAtividade ? (
+            <div
+              className="rounded-xl border border-white/10 bg-white/[0.04] p-4 text-sm text-white/55"
+              role="status"
+            >
+              <p className="font-medium text-white/75">
+                Bem-vindo(a) à sua área de trabalho.
+              </p>
+              <p className="mt-2 text-xs text-white/45">
+                Comece{' '}
+                <Link href="/app/pacientes" className="text-violet-300 underline underline-offset-2 hover:text-violet-200">
+                  cadastrando seu primeiro paciente
+                </Link>{' '}
+                ou{' '}
+                <Link href="/app/testes" className="text-violet-300 underline underline-offset-2 hover:text-violet-200">
+                  iniciando uma sessão de teste
+                </Link>
+                . Sem pacientes, o motor de scoring não pode ser aplicado.
+              </p>
+            </div>
+          ) : recentItems.length === 0 ? (
             <p className="text-sm text-white/40">
-              Ainda não há atividade suficiente para montar o resumo.
+              Ainda não há eventos recentes para listar.
             </p>
           ) : (
             <div className="space-y-3">
               {recentItems.map((item) => (
-                <div key={item.id} className="rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <Link
+                  key={`${item.kind}:${item.id}`}
+                  href={item.href}
+                  className="block rounded-2xl border border-white/10 bg-white/[0.04] p-4 transition-all duration-200 hover:border-white/20 hover:bg-white/[0.08]"
+                >
                   <p className="font-medium text-white">{item.title}</p>
                   <p className="mt-1 text-sm text-white/50">{item.subtitle}</p>
                   <p className="mt-2 text-xs text-white/30">{item.date}</p>
-                </div>
+                </Link>
               ))}
             </div>
           )}
@@ -140,13 +173,18 @@ export default function PainelPage() {
           <div className={cn(glassCard, 'p-6')}>
             <p className="text-sm text-white/40">Plano atual</p>
             <h3 className="mt-2 text-2xl font-semibold text-white">
-              {user?.assinatura?.plano?.nome ?? 'Sem plano'}
+              {plano?.nome ?? 'Sem plano'}
             </h3>
             <p className="mt-2 text-sm text-white/50">
               {cotaTotal > 0
                 ? `${formatCredits(cotaUsada)} / ${formatCredits(cotaTotal)} cota usada`
                 : 'Sem cota mensal'}
             </p>
+            {motivoSemPlano && (
+              <p className="mt-3 rounded-xl border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-200">
+                {motivoSemPlano}
+              </p>
+            )}
             <Link
               href="/app/upgrade"
               className="mt-4 inline-block text-sm text-violet-300 transition-colors hover:text-violet-200"

@@ -10,6 +10,7 @@ import {
   formatCurrency,
   formatCredits,
   glassCard,
+  normalizarPlanos,
   safeApi,
   useRequireAuth,
 } from '@/lib/app';
@@ -29,11 +30,11 @@ export default function UpgradePage() {
   useEffect(() => {
     if (!token) return;
     Promise.all([
-      safeApi<Plano[]>(router, '/billing/planos', { token }),
+      safeApi<unknown>(router, '/billing/planos', { token }),
       safeApi<UserProfile>(router, '/auth/me', { token }).catch(() => user),
     ])
       .then(([planosData, meData]) => {
-        setPlanos(planosData);
+        setPlanos(normalizarPlanos(planosData));
         setMe(meData);
       })
       .catch((err) =>
@@ -47,11 +48,21 @@ export default function UpgradePage() {
     setSubscribingId(plano.id);
     setError('');
     setSuccess('');
+    // Backend (apps/api/src/billing/assinaturas.controller.ts:9) espera
+    // `planoCodigo` (string curto tipo "essencial", "intermediario"),
+    // não `planoId` (uuid). Sem isso, a ativação quebra com 400
+    // "planoCodigo é obrigatório".
+    if (!plano.codigo) {
+      setError(
+        `Plano "${plano.nome}" sem código identificador — não foi possível ativar. Recarregue a lista.`,
+      );
+      return;
+    }
     try {
       await safeApi(router, '/billing/assinaturas', {
         token,
         method: 'POST',
-        body: JSON.stringify({ planoId: plano.id }),
+        body: JSON.stringify({ planoCodigo: plano.codigo }),
       });
       setSuccess(`Plano "${plano.nome}" ativado com sucesso.`);
       // Refresh user profile to reflect new plano.

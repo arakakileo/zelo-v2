@@ -6,6 +6,7 @@ import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { PasswordService } from './password.service';
 import { JwtStrategy } from './strategies/jwt.strategy';
+import { BillingModule } from '../../billing/billing.module';
 
 @Module({
   imports: [
@@ -18,6 +19,7 @@ import { JwtStrategy } from './strategies/jwt.strategy';
         signOptions: { expiresIn: '30m' as const },
       }),
     }),
+    BillingModule,
   ],
   controllers: [AuthController],
   providers: [AuthService, PasswordService, JwtStrategy],

@@ -6,7 +6,6 @@ import { TipoPagamento, StatusPagamento, TipoTransacao } from '@zelo/contracts';
 interface AuthRequest { user: { id: string; email: string } }
 
 interface CriarPagamentoDto { creditos: number; tipo: TipoPagamento; valorBRL: number; gatewayRef?: string }
-interface ConfirmarPagamentoDto {}
 
 /**
  * Endpoints de pagamento. Inicialmente manual: admin cria um pagamento,

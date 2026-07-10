@@ -274,14 +274,60 @@ export default function SessaoDetalhePage({
             </div>
           )}
 
-          {!hasResultadoClinico && !isBloqueada && relatorio.status === 'FINALIZADO' && (
-            <div className={glassCard + ' p-6'}>
-              <p className="text-sm text-white/40">Resultado</p>
-              <p className="mt-4 text-sm text-white/50">
-                Sem resultado clínico disponível para esta sessão.
-              </p>
-            </div>
-          )}
+          {/* Compliance SATEPSI: status DEMO NUNCA deve aparecer como
+              resultado clínico real. Mostra painel explícito "Demo (não-clínico)"
+              com a observação do motor, mas SEM score/banda do resultado. */}
+          {!hasResultadoClinico &&
+            !isBloqueada &&
+            relatorio.status === 'FINALIZADO' &&
+            relatorio.motor.status === 'DEMO' && (
+              <div className={glassCard + ' p-6'}>
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm text-white/40">Resultado</p>
+                    <p className="mt-1 text-base font-medium text-amber-200">
+                      Demo (não-clínico)
+                    </p>
+                  </div>
+                  <span className="rounded-full border border-amber-500/30 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-200">
+                    Adaptador determinístico
+                  </span>
+                </div>
+                <p className="mt-4 text-sm text-white/65">
+                  Este teste foi processado por um adapter determinístico
+                  não-clínico. <strong className="font-semibold text-white/80">
+                    O score/banda persistido é apenas para auditoria interna e não
+                    representa um resultado clínico válido</strong> — não utilize
+                  este número para diagnóstico, laudo ou tomada de decisão clínica.
+                </p>
+                {relatorio.motor.observacao && (
+                  <p className="mt-3 rounded-xl border border-white/10 bg-white/[0.04] p-3 text-xs text-white/55">
+                    <span className="text-white/40">Observação do motor: </span>
+                    {relatorio.motor.observacao}
+                  </p>
+                )}
+                <p className="mt-3 text-xs text-white/40">
+                  Versão do motor: {relatorio.motor.versao ?? '—'}
+                  {relatorio.motor.versaoRegra ? ` · regra ${relatorio.motor.versaoRegra}` : ''}
+                </p>
+                <p className="mt-3 text-xs text-white/40">
+                  Para resultados clínicos reais, é necessário uma regra
+                  <em> PRODUCAO </em> licenciada (atualmente nenhuma existe no repositório).
+                </p>
+              </div>
+            )}
+
+          {!hasResultadoClinico &&
+            !isBloqueada &&
+            relatorio.status === 'FINALIZADO' &&
+            relatorio.motor.status !== 'DEMO' && (
+              <div className={glassCard + ' p-6'}>
+                <p className="text-sm text-white/40">Resultado</p>
+                <p className="mt-4 text-sm text-white/50">
+                  Sem resultado clínico disponível para esta sessão.
+                </p>
+              </div>
+            )}
         </div>
       )}
 

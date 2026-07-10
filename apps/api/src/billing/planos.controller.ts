@@ -1,10 +1,6 @@
-import { Body, Controller, Get, NotFoundException, Param, Post, UseGuards, Req } from '@nestjs/common';
-import { AuthGuard } from '@nestjs/passport';
+import { Controller, Get, NotFoundException, Param } from '@nestjs/common';
 import { PrismaService } from '../common/prisma/prisma.service';
-import { StatusAssinatura, CodigoOrigemConsumo, PlanoResumo } from '@zelo/contracts';
-import { getCicloAtual } from './ciclo.util';
-
-interface AuthRequest { user: { id: string; email: string } }
+import { PlanoResumo } from '@zelo/contracts';
 
 /**
  * Endpoints públicos/privados sobre planos.

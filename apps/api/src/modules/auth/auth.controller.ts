@@ -12,6 +12,7 @@ import { ApiTags, ApiOperation, ApiResponse, ApiBearerAuth } from '@nestjs/swagg
 import { AuthGuard } from '@nestjs/passport';
 import type { Request } from 'express';
 import { AuthService } from './auth.service';
+import { BillingContextService } from '../../billing/billing-context.service';
 import { RegisterDto } from './dto/register.dto';
 import { LoginDto } from './dto/login.dto';
 
@@ -36,7 +37,10 @@ function extractBearerToken(req: Request): string {
 @ApiTags('auth')
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly billingContext: BillingContextService,
+  ) {}
 
   @Post('registro')
   @ApiOperation({ summary: 'Registrar novo usuário' })
@@ -82,9 +86,29 @@ export class AuthController {
   @UseGuards(AuthGuard('jwt'))
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Obter perfil do usuário autenticado' })
-  @ApiResponse({ status: 200, description: 'Dados do perfil' })
+  @ApiResponse({ status: 200, description: 'Dados do perfil + cobrança' })
   @ApiResponse({ status: 401, description: 'Não autenticado' })
   async me(@Req() req: { user: JwtUser }) {
-    return this.authService.getProfile(req.user.id);
+    const [profile, cobranca] = await Promise.all([
+      this.authService.getProfile(req.user.id),
+      this.billingContext.resumo(req.user.id),
+    ]);
+    return {
+      ...profile,
+      // Campos de cobrança prontos para a UI consumir (layout, header, dashboard).
+      planoAtual: cobranca?.plano ?? null,
+      cicloAtual: cobranca?.assinatura
+        ? {
+            inicio: cobranca.assinatura.cicloInicio,
+            fim: cobranca.assinatura.cicloFim,
+            status: cobranca.assinatura.status,
+          }
+        : null,
+      saldo: cobranca?.saldo ?? 0,
+      cotaUsada: cobranca?.cotaUsada ?? 0,
+      cotaTotal: cobranca?.cotaTotal ?? 0,
+      paygUsado: cobranca?.paygUsado ?? 0,
+      motivoSemPlano: cobranca?.motivoSemPlano ?? null,
+    };
   }
 }

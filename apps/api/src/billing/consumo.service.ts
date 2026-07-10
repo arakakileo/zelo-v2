@@ -59,7 +59,7 @@ export class ConsumoService {
    * Idempotente. Chamado por `debitar` (na transação).
    */
   private async ensureCotaUso(tx: Prisma.TransactionClient, assinaturaId: string, creditosIncluidos: number) {
-    const { yyyymm, inicio, fim } = getCicloAtual();
+    const { yyyymm } = getCicloAtual();
     // tenta achar existente
     const existing = await tx.cotaUso.findUnique({
       where: { assinaturaId_cicloYYYYMM: { assinaturaId, cicloYYYYMM: yyyymm } },
@@ -283,7 +283,7 @@ export class ConsumoService {
         // Em caso de ciclo expirado, creditamos o saldo PAYG como fallback
         const primeiraTransacao = transacoes[0]!;
         const refMes = primeiraTransacao.createdAt;
-        const { yyyymm, inicio, fim } = getCicloAtual(refMes);
+        const { yyyymm } = getCicloAtual(refMes);
         const cota = await tx.cotaUso.findUnique({
           where: { assinaturaId_cicloYYYYMM: { assinaturaId: user.assinatura.id, cicloYYYYMM: yyyymm } },
         });
@@ -354,7 +354,7 @@ export class ConsumoService {
     const fim = new Date(Date.UTC(inicio.getUTCFullYear(), inicio.getUTCMonth() + 1, inicio.getUTCDate(), inicio.getUTCHours(), inicio.getUTCMinutes(), inicio.getUTCSeconds(), inicio.getUTCMilliseconds()));
     const updated = await tx.assinatura.update({
       where: { id: ass.id },
-      data: { cicloInicio: inicio, cicloFim: fim },
+      data: { cicloInicio: inicio, cicloFim: fim, proximaRenovacao: fim },
     });
     // Cria o novo CotaUso com a cota mensal
     const { yyyymm } = getCicloAtual(inicio);

@@ -51,12 +51,71 @@ export type MotorStatus =
 export interface SessaoResumo {
   id: string;
   status: StatusSessao;
+  /**
+   * `motorStatus` NÃO é retornado pelo GET /testes/sessoes (apenas no
+   * relatório individual). Mantido como `null` no shape da lista; quem
+   * precisar do status do motor consulta `/relatorio` da sessão.
+   */
   motorStatus: MotorStatus | null;
   createdAt: string;
+  /** Sigla+nome achatado a partir do backend (`{ sigla, nome }`). */
   teste: string;
+  /** Sigla+nome achatado para o item da lista de sessões. */
+  testeSigla?: string;
+  testeNome?: string;
   pacienteId: string;
   pacienteNome: string;
-  psicologoNome: string;
+  /**
+   * Psicólogo aplicador — atualmente o GET /testes/sessoes não retorna esse
+   * campo. Mantido opcional para futuro, e para o frontend não quebrar.
+   */
+  psicologoNome?: string;
+  precoCobrado?: number | string | null;
+  origemConsumo?: 'COTA' | 'PAYG' | null;
+  finalizadoEm?: string | null;
+}
+
+/**
+ * Shape real retornado por GET /testes/sessoes — `teste` e `paciente`
+ * vêm como objetos do Prisma, não achatados. Use o adapter
+ * `adaptarSessoesResumo` para normalizar antes de passar para componentes.
+ */
+export interface SessaoResumoApi {
+  id: string;
+  status: StatusSessao;
+  precoCobrado?: number | string | null;
+  origemConsumo?: 'COTA' | 'PAYG' | null;
+  finalizadoEm?: string | null;
+  createdAt: string;
+  teste: { sigla: string; nome: string };
+  paciente: { id: string; nome: string };
+}
+
+/**
+ * Normaliza o shape cru da API para o shape achatado esperado pela UI.
+ * Idempotente — se já vier achatado (ex: mock em teste), mantém.
+ */
+export function adaptarSessaoResumo(raw: SessaoResumoApi): SessaoResumo {
+  const testeSigla = typeof raw.teste === 'object' && raw.teste !== null ? raw.teste.sigla : '';
+  const testeNome = typeof raw.teste === 'object' && raw.teste !== null ? raw.teste.nome : '';
+  return {
+    id: raw.id,
+    status: raw.status,
+    motorStatus: null, // não retornado pela lista — só no /relatorio
+    createdAt: raw.createdAt,
+    teste: `${testeSigla} · ${testeNome}`.trim(),
+    testeSigla,
+    testeNome,
+    pacienteId: raw.paciente?.id ?? '',
+    pacienteNome: raw.paciente?.nome ?? '',
+    precoCobrado: raw.precoCobrado ?? null,
+    origemConsumo: raw.origemConsumo ?? null,
+    finalizadoEm: raw.finalizadoEm ?? null,
+  };
+}
+
+export function adaptarSessoesResumo(rawList: SessaoResumoApi[]): SessaoResumo[] {
+  return (rawList ?? []).map(adaptarSessaoResumo);
 }
 
 export interface TesteCatalogo {
@@ -127,12 +186,70 @@ export interface RelatorioSessao {
 
 // ─── Billing / subscription types ───────────────────────────────────────────
 
+/**
+ * Plano exposto pela API. `precoMensal` pode vir como string (Prisma Decimal
+ * serializa como string por padrão) ou number, dependendo do select — aceitamos
+ * os dois para não quebrar em runtime.
+ */
+/**
+ * Plano exposto pela API. `precoMensal` pode vir como string (Prisma Decimal
+ * serializa como string por padrão) ou number, dependendo do select — aceitamos
+ * os dois para não quebrar em runtime.
+ *
+ * O backend expõe `precoMensalBRL` (canônico de `@zelo/contracts`) mas o
+ * adapter abaixo aceita também a forma reduzida legada `precoMensal`
+ * para tolerar shapes antigos vindos de mocks/testes.
+ */
 export interface Plano {
   id: string;
+  /**
+   * Código curto do plano (`essencial`, `intermediario`, etc.) — usado pelo
+   * endpoint `POST /billing/assinaturas` como `planoCodigo`. O frontend
+   * estava enviando `planoId` e quebrando a ativação do plano.
+   */
+  codigo?: string;
   nome: string;
-  precoMensal: number;
+  precoMensal: number | string;
+  /** Quando o backend envia `precoMensalBRL` (canônico), normalizamos aqui. */
+  precoMensalBRL?: number | string;
   cotaMensal: number;
   descricao?: string | null;
+}
+
+/**
+ * Normaliza o shape de plano vindo do backend (`/billing/planos` expõe
+ * `PlanoResumo` com `precoMensalBRL`/`precoPaygBRL`; formas antigas de
+ * testes/mocks podem trazer `precoMensal` direto).
+ *
+ * Idempotente — pode ser chamada múltiplas vezes sem efeito colateral.
+ */
+export function normalizarPlano(raw: unknown): Plano | null {
+  if (!raw || typeof raw !== 'object') return null;
+  const r = raw as Record<string, unknown>;
+  if (typeof r.id !== 'string' || typeof r.nome !== 'string') return null;
+  const precoMensal =
+    (r.precoMensalBRL as number | string | undefined) ??
+    (r.precoMensal as number | string | undefined) ??
+    0;
+  return {
+    id: r.id,
+    codigo: typeof r.codigo === 'string' ? r.codigo : undefined,
+    nome: r.nome,
+    precoMensal,
+    precoMensalBRL: r.precoMensalBRL as number | string | undefined,
+    cotaMensal:
+      typeof r.cotaMensal === 'number'
+        ? r.cotaMensal
+        : Number(r.cotaMensal ?? 0),
+    descricao: (r.descricao as string | null | undefined) ?? null,
+  };
+}
+
+export function normalizarPlanos(rawList: unknown): Plano[] {
+  if (!Array.isArray(rawList)) return [];
+  return rawList
+    .map((r) => normalizarPlano(r))
+    .filter((p): p is Plano => p !== null);
 }
 
 export interface Assinatura {
@@ -140,12 +257,16 @@ export interface Assinatura {
   status: string;
   cicloInicio: string | null;
   cicloFim: string | null;
+  /** Créditos de cota já consumidos no ciclo atual (exposto por /auth/me). */
   cotaUsada?: number | null;
 }
 
 export interface Carteira {
-  saldoPayg: number | string;
-  saldoRollover: number | string;
+  /**
+   * Saldo único de créditos PAYG + rollover (não-split no schema).
+   * Mantido como `saldo` para casar com `Carteira.saldo Int` do Prisma.
+   */
+  saldo: number | string;
 }
 
 export interface UserProfile {
@@ -156,6 +277,17 @@ export interface UserProfile {
   createdAt: string;
   assinatura: Assinatura | null;
   carteira: Carteira | null;
+  /**
+   * Campos flat expostos por `/auth/me` (BillingContextService.resumo).
+   * Mantidos como opcionais porque o fallback do contexto do app não os traz.
+   */
+  planoAtual?: Plano | null;
+  cicloAtual?: { inicio: string; fim: string; status: string } | null;
+  saldo?: number | string | null;
+  cotaUsada?: number | null;
+  cotaTotal?: number | null;
+  paygUsado?: number | null;
+  motivoSemPlano?: string | null;
 }
 
 export interface Pagamento {
@@ -260,13 +392,19 @@ export function maskEmail(email: string) {
 }
 
 /**
- * Saldo total de créditos do usuário = PAYG + rollover.
+ * Saldo total de créditos do usuário = `carteira.saldo` (PAYG + rollover
+ * agregados no schema — `Carteira.saldo Int` único).
+ *
+ * `Number(...)` aceita tanto `number` quanto `string` (Prisma envia Decimal
+ * como string em alguns caminhos). Toleramos string vazia/null/undefined
+ * tratando como 0.
  */
 export function saldoTotal(carteira: Carteira | null): number {
   if (!carteira) return 0;
-  const payg = Number(carteira.saldoPayg ?? 0);
-  const rollover = Number(carteira.saldoRollover ?? 0);
-  return payg + rollover;
+  const raw = carteira.saldo;
+  if (raw === null || raw === undefined || raw === '') return 0;
+  const numeric = typeof raw === 'string' ? Number(raw) : raw;
+  return Number.isFinite(numeric) ? numeric : 0;
 }
 
 /** Rótulo legível para o status da sessão. */

@@ -34,7 +34,6 @@ async function bootstrap() {
       .setDescription('SaaS para gestão de consultórios de psicologia')
       .setVersion('2.0')
       .addBearerAuth()
-      .addApiKey({ type: 'apiKey', name: 'X-Clinica-ID', in: 'header' }, 'X-Clinica-ID')
       .build();
     const document = SwaggerModule.createDocument(app, config);
     SwaggerModule.setup('docs', app, document);

@@ -152,6 +152,8 @@ model Assinatura {
   status          StatusAssinatura @default(ATIVA)
   cicloInicio     DateTime
   cicloFim        DateTime
+  /// Data prevista da próxima renovação de ciclo (= cicloFim enquanto ATIVA).
+  proximaRenovacao DateTime
   canceladaEm     DateTime?
   gatewayRef      String?
 
