@@ -256,4 +256,149 @@ describe('ClinicalTestDefinitionService', () => {
       expect(PROTOCOL_DEFINITIONS).toHaveLength(4);
     });
   });
+
+  // 10. Flat top-level fallback: wizard envia mapa flat no top-level
+  describe('flat top-level fallback para fieldScores', () => {
+    it('WASI flat top-level converte corretamente em fieldScores/total/rawScores', () => {
+      const payload = service.prepareRecordPayload('WASI', {
+        vocabulario: 12,
+        semelhancas: 10,
+        cubos: 14,
+        raciocinio_matricial: 11,
+      })!;
+
+      expect(payload.fieldScores).toEqual({
+        vocabulario: 12,
+        semelhancas: 10,
+        cubos: 14,
+        raciocinio_matricial: 11,
+      });
+      expect(payload.total).toBe(47);
+
+      const summary = payload.structuredSummary as Record<string, unknown>;
+      expect(summary['soma_bruta_total_4']).toBe(47);
+
+      const rawScores = payload.rawScores as Record<string, unknown>;
+      const rawFieldScores = rawScores['field_scores'] as Record<string, number>;
+      expect(rawFieldScores['vocabulario']).toBe(12);
+      expect(rawFieldScores['cubos']).toBe(14);
+    });
+
+    it('RAVLT flat top-level converte corretamente em fieldScores/total/rawScores', () => {
+      const payload = service.prepareRecordPayload('RAVLT', {
+        a1: 5, a2: 7, a3: 8, a4: 9, a5: 10,
+        b1: 4, a6: 8, a7: 7, reconhecimento: 12,
+      })!;
+
+      // ET = A1+A2+A3+A4+A5 = 5+7+8+9+10 = 39
+      expect(payload.fieldScores).toEqual({
+        a1: 5, a2: 7, a3: 8, a4: 9, a5: 10,
+        b1: 4, a6: 8, a7: 7, reconhecimento: 12,
+      });
+      expect(payload.total).toBe(70);
+
+      const summary = payload.structuredSummary as Record<string, unknown>;
+      const indicadores = (summary['indicadores_brutos'] ?? {}) as Record<string, unknown>;
+      // ET = 39
+      expect(indicadores['ET - Escore Total']).toBe(39);
+      // ALT = ET - (5 * A1) = 39 - 25 = 14
+      expect(indicadores['ALT - Aprendizagem ao Longo das Tentativas']).toBe(14);
+    });
+
+    it('AIP flat top-level produz envelope estruturado com o valor digitado, não zeros', () => {
+      // AIP usa GENERIC_MANUAL_SCORE_FIELDS = [{ key: 'escore_total' }]
+      // Wizard sends flat { escore_total: 7 }
+      const payload = service.prepareRecordPayload('AIP', {
+        escore_total: 7,
+      })!;
+
+      expect(payload.fieldScores).toEqual({ escore_total: 7 });
+      expect(payload.total).toBe(7);
+
+      const summary = payload.structuredSummary as Record<string, unknown>;
+      const brutos = (summary['brutos'] ?? {}) as Record<string, unknown>;
+      expect(brutos['Escore Total']).toBe(7);
+    });
+
+    it('flat top-level com valores zero funciona corretamente', () => {
+      const payload = service.prepareRecordPayload('WASI', {
+        vocabulario: 0,
+        semelhancas: 0,
+        cubos: 0,
+        raciocinio_matricial: 0,
+      })!;
+
+      expect(payload.total).toBe(0);
+      const summary = payload.structuredSummary as Record<string, unknown>;
+      expect(summary['soma_bruta_total_4']).toBe(0);
+    });
+  });
+
+  // 11. Precedência: envelopes canônicos mantêm prioridade sobre flat fallback
+  describe('precedência de envelopes canônicos sobre flat fallback', () => {
+    it('field_scores top-level tem precedência sobre flat fallback', () => {
+      // When both field_scores and flat keys exist, field_scores wins.
+      const payload = service.prepareRecordPayload('WASI', {
+        field_scores: {
+          vocabulario: 12,
+          semelhancas: 10,
+          cubos: 14,
+          raciocinio_matricial: 11,
+        },
+        // flat keys present but should be ignored
+        vocabulario: 99,
+        semelhancas: 99,
+        cubos: 99,
+        raciocinio_matricial: 99,
+      })!;
+
+      expect(payload.fieldScores['vocabulario']).toBe(12);
+      expect(payload.fieldScores['cubos']).toBe(14);
+      expect(payload.total).toBe(47);
+    });
+
+    it('raw_scores.field_scores tem precedência sobre flat fallback', () => {
+      const payload = service.prepareRecordPayload('WASI', {
+        raw_scores: {
+          field_scores: {
+            vocabulario: 8,
+            semelhancas: 9,
+            cubos: 7,
+            raciocinio_matricial: 6,
+          },
+        },
+        // flat keys present but should be ignored
+        vocabulario: 99,
+        semelhancas: 99,
+        cubos: 99,
+        raciocinio_matricial: 99,
+      })!;
+
+      expect(payload.fieldScores['vocabulario']).toBe(8);
+      expect(payload.fieldScores['raciocinio_matricial']).toBe(6);
+      expect(payload.total).toBe(30);
+    });
+
+    it('field_scores tem precedência sobre raw_scores.field_scores', () => {
+      const payload = service.prepareRecordPayload('WASI', {
+        field_scores: {
+          vocabulario: 12,
+          semelhancas: 10,
+          cubos: 14,
+          raciocinio_matricial: 11,
+        },
+        raw_scores: {
+          field_scores: {
+            vocabulario: 99,
+            semelhancas: 99,
+            cubos: 99,
+            raciocinio_matricial: 99,
+          },
+        },
+      })!;
+
+      expect(payload.fieldScores['vocabulario']).toBe(12);
+      expect(payload.total).toBe(47);
+    });
+  });
 });

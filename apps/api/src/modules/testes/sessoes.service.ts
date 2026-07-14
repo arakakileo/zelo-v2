@@ -373,7 +373,7 @@ export class SessoesService {
         estornoValor: true,
         estornoMotivo: true,
         paciente: { select: { id: true, nomeEncrypted: true, cpfEncrypted: true } },
-        teste: { select: { sigla: true, nome: true } },
+        teste: { select: { sigla: true, nome: true, slug: true } },
         psicologo: { select: { nomeCompleto: true, registroProfissional: true } },
       },
     });

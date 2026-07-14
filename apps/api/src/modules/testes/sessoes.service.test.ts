@@ -784,5 +784,57 @@ describe('SessoesService', () => {
       expect(Number(result.estorno!.valor)).toBe(15);
       expect(result.estorno!.motivo).toContain('BLOQUEADO');
     });
+
+    it('exposes teste.slug in the report for catalog matching', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      const envelope = {
+        score: 47,
+        banda: null,
+        versaoMotor: '0.1.0',
+        versaoRegra: null,
+        observacao: 'OK',
+      };
+
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
+        id: 's1',
+        status: StatusSessao.FINALIZADO,
+        psicologoId: 'psico-1',
+        dadosRespostas: { vocabulario: 12 },
+        resultadoCalculadoEncrypted: crypto.encrypt(JSON.stringify(envelope)),
+        conclusaoPsicologoEncrypted: crypto.encrypt('ok'),
+        finalizadoEm: new Date(),
+        motorVersao: '0.1.0',
+        motorVersaoRegra: null,
+        motorStatus: MotorStatusSessao.OK,
+        motorScore: 47,
+        motorBanda: null,
+        motorHashRespostas: 'a'.repeat(64),
+        motorItensInvalidos: [],
+        motorObservacao: 'OK',
+        estornoEm: null,
+        estornoValor: null,
+        estornoMotivo: null,
+        paciente: {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('Teste Paciente'),
+          cpfEncrypted: crypto.encrypt('123'),
+        },
+        teste: { sigla: 'WASI', nome: 'WASI', slug: 'wasi' },
+        psicologo: {
+          nomeCompleto: 'Dr. Silva',
+          registroProfissional: 'CRP 06/12345',
+        },
+      });
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      // slug is exposed for frontend to match against catalogo-estruturado
+      expect(result.teste).toHaveProperty('slug', 'wasi');
+      expect(result.teste).toHaveProperty('sigla', 'WASI');
+      // No PII leak in teste object
+      expect(Object.keys(result.teste).sort()).toEqual(['nome', 'sigla', 'slug']);
+    });
   });
 });

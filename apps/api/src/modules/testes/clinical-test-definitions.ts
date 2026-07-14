@@ -906,6 +906,10 @@ export class ClinicalTestDefinitionService {
       definition,
       input['field_scores'],
       rawScoresSource['field_scores'],
+      // Flat top-level fallback: allows the wizard to send the same flat map
+      // that the scoring engine receives (e.g. { vocabulario: 12, ... }).
+      // Canonical envelopes above keep precedence.
+      input,
     );
 
     let total: number | null = (rawScoresSource['total'] as number) ?? null;
