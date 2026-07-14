@@ -154,7 +154,13 @@ export interface CatalogoEstruturadoResponse {
 export interface RelatorioSessao {
   id: string;
   status: StatusSessao;
-  teste: { sigla: string; nome: string };
+  /**
+   * `slug` é aditivo — exposto pelo backend desde 34c1420 para que o frontend
+   * consiga casar com `/testes/catalogo-estruturado` e renderizar wizard por
+   * etapa. Sessões criadas antes dessa migração podem não trazer o campo;
+   * nesse caso o wizard cai no fallback de editor JSON avançado.
+   */
+  teste: { sigla: string; nome: string; slug?: string | null };
   paciente: { id: string; nome: string };
   psicologo: { nome: string; registro: string | null };
   dadosRespostas: Record<string, unknown> | null;

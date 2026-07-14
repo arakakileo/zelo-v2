@@ -2,21 +2,23 @@
 
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
-import { useEffect, useState, type FormEvent } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
+  CatalogoEstruturadoResponse,
+  CatalogEntryEstruturado,
   RelatorioSessao,
   buttonPrimaryClass,
   buttonSecondaryClass,
   formatCredits,
   formatDateTime,
   glassCard,
-  inputClass,
   isResultadoClinico,
   motorStatusLabel,
   safeApi,
   statusSessaoLabel,
   useRequireAuth,
 } from '@/lib/app';
+import { RespostaWizardModal } from './_components/RespostaWizardModal';
 
 export default function SessaoDetalhePage({
   params,
@@ -28,12 +30,15 @@ export default function SessaoDetalhePage({
   const [sessaoId, setSessaoId] = useState('');
   const [relatorio, setRelatorio] = useState<RelatorioSessao | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [canceling, setCanceling] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
-  const [respostasText, setRespostasText] = useState('');
-  const [conclusao, setConclusao] = useState('');
+  const [wizardOpen, setWizardOpen] = useState(false);
+  const [canceling, setCanceling] = useState(false);
+
+  // Carrega o catálogo estruturado de forma tolerante (item 2 do card):
+  // se o endpoint falhar, devolvemos null e o wizard cai no fallback.
+  const [catalogoEstruturado, setCatalogoEstruturado] =
+    useState<CatalogoEstruturadoResponse | null>(null);
 
   useEffect(() => {
     params.then((resolved) => setSessaoId(resolved.sessaoId));
@@ -41,11 +46,29 @@ export default function SessaoDetalhePage({
 
   const load = async () => {
     if (!token || !sessaoId) return;
-    const data = await safeApi<RelatorioSessao>(router, `/testes/sessoes/${sessaoId}/relatorio`, {
-      token,
-    });
+    const data = await safeApi<RelatorioSessao>(
+      router,
+      `/testes/sessoes/${sessaoId}/relatorio`,
+      { token },
+    );
     setRelatorio(data);
   };
+
+  // Carrega o catálogo estruturado uma vez por token — não depende do sessaoId,
+  // mas só roda após o token estar disponível para não disparar 401 antes do login.
+  useEffect(() => {
+    if (!token) return;
+    safeApi<CatalogoEstruturadoResponse>(
+      router,
+      '/testes/catalogo-estruturado',
+      { token },
+    )
+      .then((data) => setCatalogoEstruturado(data))
+      .catch(() => {
+        // tolerante: deixa null; wizard usa fallback JSON
+        setCatalogoEstruturado(null);
+      });
+  }, [token, router]);
 
   useEffect(() => {
     if (!token || !sessaoId) return;
@@ -56,42 +79,16 @@ export default function SessaoDetalhePage({
       .finally(() => setLoading(false));
   }, [sessaoId, token]);
 
-  async function handleFinalizar(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token || !sessaoId) return;
-    setError('');
-    setSuccess('');
-
-    let dadosRespostas: Record<string, number>;
-    try {
-      const parsed = JSON.parse(respostasText || '{}');
-      if (typeof parsed !== 'object' || Array.isArray(parsed) || parsed === null) {
-        throw new Error('JSON inválido');
-      }
-      dadosRespostas = parsed;
-    } catch {
-      setError('Respostas devem ser um JSON válido (ex: {"item01": 0, "item02": 1})');
-      return;
-    }
-
-    setSaving(true);
-    try {
-      await safeApi(router, `/testes/sessoes/${sessaoId}/finalizar`, {
-        token,
-        method: 'POST',
-        body: JSON.stringify({ dadosRespostas, conclusaoPsicologo: conclusao }),
-      });
-      setSuccess('Sessão finalizada com sucesso.');
-      setRespostasText('');
-      setConclusao('');
-      await load();
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : 'Erro ao finalizar sessão';
-      setError(msg);
-    } finally {
-      setSaving(false);
-    }
-  }
+  // Casa o teste da sessão com a definição estruturada pelo slug (item 2).
+  // Se o slug estiver ausente (sessão antiga) OU se o catálogo não carregou,
+  // devolve null → wizard abre em modo fallback-JSON.
+  const definicaoEstruturada: CatalogEntryEstruturado | null = useMemo(() => {
+    if (!relatorio) return null;
+    const slug = relatorio.teste.slug;
+    if (!slug) return null;
+    const found = (catalogoEstruturado?.tests ?? []).find((t) => t.slug === slug);
+    return found ?? null;
+  }, [relatorio, catalogoEstruturado]);
 
   async function handleCancelar() {
     if (!token || !sessaoId) return;
@@ -142,6 +139,17 @@ export default function SessaoDetalhePage({
               Aplicado por: {relatorio.psicologo.nome}
               {relatorio.psicologo.registro ? ` (CRP ${relatorio.psicologo.registro})` : ''}
             </p>
+            {relatorio.teste.slug && (
+              <p className="mt-1 text-xs text-white/30">
+                Definição estruturada:{' '}
+                <code className="rounded bg-white/5 px-1 py-0.5 text-white/55">
+                  {relatorio.teste.slug}
+                </code>
+                {definicaoEstruturada
+                  ? ` (${definicaoEstruturada.fields.length} campos)`
+                  : ' (definição não encontrada no catálogo atual)'}
+              </p>
+            )}
           </div>
           <div className="flex flex-col items-end gap-2">
             <span className="rounded-full border border-white/10 px-3 py-1 text-xs text-white/60">
@@ -177,33 +185,42 @@ export default function SessaoDetalhePage({
       )}
 
       {isAberta && (
-        <form onSubmit={handleFinalizar} className={glassCard + ' p-6'}>
+        <div className={glassCard + ' p-6'}>
           <p className="text-sm text-white/40">Finalizar sessão</p>
           <h2 className="mt-1 text-xl font-semibold text-white">Registrar respostas</h2>
           <p className="mt-2 text-xs text-white/35">
-            As respostas seguem o formato canônico do teste. O motor de scoring valida e calcula o
-            resultado. Respostas inválidas ou testes sem regra licenciada resultam em bloqueio +
-            estorno automático.
+            {definicaoEstruturada ? (
+              <>
+                Definição estruturada disponível ({definicaoEstruturada.fields.length} campos).
+                O wizard vai guiá-lo por uma pergunta numérica por etapa.
+              </>
+            ) : relatorio.teste.slug ? (
+              <>
+                O teste possui slug estruturado (
+                <code className="rounded bg-white/5 px-1 py-0.5 text-white/55">
+                  {relatorio.teste.slug}
+                </code>
+                ) mas o catálogo detalhado não pôde ser carregado. O wizard abrirá no modo
+                editor JSON avançado.
+              </>
+            ) : (
+              <>
+                Este teste não possui definição estruturada registrada. O wizard abrirá no
+                modo editor JSON avançado — você informa as respostas no formato canônico{' '}
+                <code className="rounded bg-white/5 px-1 py-0.5 text-white/55">
+                  {`{"campo": numero}`}
+                </code>
+                .
+              </>
+            )}
           </p>
-          <div className="mt-5 space-y-3">
-            <textarea
-              className={inputClass + ' min-h-[120px] font-mono text-sm'}
-              placeholder='{"item01": 0, "item02": 1, "item03": 2, ...}'
-              value={respostasText}
-              onChange={(e) => setRespostasText(e.target.value)}
-              required
-            />
-            <textarea
-              className={inputClass + ' min-h-[80px]'}
-              placeholder="Conclusão do psicólogo (mínimo 3 caracteres)"
-              value={conclusao}
-              onChange={(e) => setConclusao(e.target.value)}
-              required
-            />
-          </div>
           <div className="mt-5 flex flex-wrap gap-3">
-            <button type="submit" disabled={saving} className={buttonPrimaryClass}>
-              {saving ? 'Processando...' : 'Finalizar sessão'}
+            <button
+              type="button"
+              onClick={() => setWizardOpen(true)}
+              className={buttonPrimaryClass}
+            >
+              Registrar respostas
             </button>
             <button
               type="button"
@@ -214,7 +231,7 @@ export default function SessaoDetalhePage({
               {canceling ? 'Cancelando...' : 'Cancelar sessão (estornar)'}
             </button>
           </div>
-        </form>
+        </div>
       )}
 
       {!isAberta && (
@@ -336,6 +353,26 @@ export default function SessaoDetalhePage({
           ← Voltar para testes
         </Link>
       </div>
+
+      {/* Wizard modal — só renderiza quando aberto */}
+      <RespostaWizardModal
+        open={wizardOpen}
+        token={token}
+        sessaoId={sessaoId}
+        testeSigla={relatorio.teste.sigla}
+        testeNome={relatorio.teste.nome}
+        definicao={definicaoEstruturada}
+        onClose={() => setWizardOpen(false)}
+        onFinalizado={async () => {
+          setWizardOpen(false);
+          setSuccess('Sessão finalizada com sucesso.');
+          try {
+            await load();
+          } catch (err) {
+            setError(err instanceof Error ? err.message : 'Erro ao recarregar relatório');
+          }
+        }}
+      />
     </section>
   );
 }
