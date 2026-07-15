@@ -40,17 +40,26 @@ export function useWizardSubmit({ token, sessaoId, definicao }: UseWizardSubmitA
       jsonText: string,
       conclusao: string,
     ): Promise<WizardSubmitOutcome> => {
-      if (!token) return { kind: 'validation', message: 'Token ausente.' };
-      if (submitting) return { kind: 'validation', message: 'Já em envio.' };
+      if (!token) {
+        setSubmitError('Token ausente.');
+        return { kind: 'validation', message: 'Token ausente.' };
+      }
+      if (submitting) {
+        setSubmitError('Já em envio.');
+        return { kind: 'validation', message: 'Já em envio.' };
+      }
 
       let dadosRespostas: Record<string, number>;
       if (mode === 'fallback-json') {
         const parsed = parseFallbackRespostas(jsonText);
         if (!parsed.ok) {
-          return { kind: 'validation', message: parsed.error ?? 'JSON inválido.' };
+          const msg = parsed.error ?? 'JSON inválido.';
+          setSubmitError(msg);
+          return { kind: 'validation', message: msg };
         }
         const errC = validateConclusao(conclusao);
         if (errC) {
+          setSubmitError(errC);
           return { kind: 'validation', message: errC };
         }
         dadosRespostas = parsed.data;
@@ -60,18 +69,20 @@ export function useWizardSubmit({ token, sessaoId, definicao }: UseWizardSubmitA
           const raw = draft[field.key] ?? '';
           const n = Number(raw);
           if (!Number.isFinite(n)) {
-            return {
-              kind: 'validation',
-              message: `Campo "${field.label}" inválido.`,
-            };
+            const msg = `Campo "${field.label}" inválido.`;
+            setSubmitError(msg);
+            return { kind: 'validation', message: msg };
           }
           flat[field.key] = n;
         }
         if (Object.keys(flat).length === 0) {
-          return { kind: 'validation', message: 'Nenhuma resposta informada.' };
+          const msg = 'Nenhuma resposta informada.';
+          setSubmitError(msg);
+          return { kind: 'validation', message: msg };
         }
         const errC = validateConclusao(conclusao);
         if (errC) {
+          setSubmitError(errC);
           return { kind: 'validation', message: errC };
         }
         dadosRespostas = flat;

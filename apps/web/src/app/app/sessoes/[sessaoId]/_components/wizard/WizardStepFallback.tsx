@@ -62,6 +62,10 @@ export function WizardStepFallback({
           error={conclusaoError}
           errorId={conclusaoErrorId}
           onChange={onConclusaoChange}
+          // autoFocus opt-in: o JSON já capturou o foco inicial; a
+          // conclusão só recebe foco quando o usuário chega nela via Tab
+          // ou clique.
+          autoFocus={false}
         />
       </div>
     </div>

@@ -8,6 +8,12 @@ export interface WizardStepConclusaoProps {
   error: string | null;
   errorId: string;
   onChange: (next: string) => void;
+  /**
+   * Quando `true`, foca este campo ao montar. Use em uma única etapa por
+   * modal para evitar múltiplos autofocus competindo — o caller decide
+   * qual é o "primeiro campo lógico" do modo atual.
+   */
+  autoFocus?: boolean;
 }
 
 export function WizardStepConclusao({
@@ -15,6 +21,7 @@ export function WizardStepConclusao({
   error,
   errorId,
   onChange,
+  autoFocus = false,
 }: WizardStepConclusaoProps) {
   const hasError = error !== null;
   return (
@@ -24,7 +31,7 @@ export function WizardStepConclusao({
         Mínimo {CONCLUSAO_MIN} caracteres. Texto qualitativo que acompanha o relatório.
       </p>
       <textarea
-        autoFocus
+        autoFocus={autoFocus}
         className={inputClass + ' min-h-[120px]'}
         value={value}
         onChange={(e) => onChange(e.target.value)}

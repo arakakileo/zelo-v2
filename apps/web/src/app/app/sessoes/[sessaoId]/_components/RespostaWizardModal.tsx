@@ -98,7 +98,12 @@ export function RespostaWizardModal({
     useWizardSubmit({ token, sessaoId, definicao });
 
   const isDirty = useMemo(() => {
-    if (mode === 'fallback-json') return jsonText.trim().length > 0;
+    if (mode === 'fallback-json') {
+      // No fallback, qualquer um dos dois campos com conteúdo conta como
+      // draft sujo. Fechar com conclusao-only (sem JSON) também precisa
+      // pedir confirmação para preservar o que o usuário escreveu.
+      return jsonText.trim().length > 0 || conclusao.trim().length > 0;
+    }
     const hasAnyFieldValue = Object.values(draft).some((v) => v.trim().length > 0);
     return hasAnyFieldValue || conclusao.trim().length > 0;
   }, [mode, draft, jsonText, conclusao]);
