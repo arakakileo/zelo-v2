@@ -105,11 +105,15 @@ export function RespostaWizardModal({
     useWizardSubmit({ token, sessaoId, definicao: frozenDefinicao });
 
   const isDirty = useMemo(() => {
-    // Dirty-check conclusão-only: se o psicólogo escreveu ALGUMA coisa no
-    // campo de conclusão (qualquer modo), pedir confirmação antes de fechar.
-    // Campos numéricos/JSON não contam — o usuário pode ter só clicado.
-    return conclusao.trim().length > 0;
-  }, [conclusao]);
+    if (mode === 'fallback-json') {
+      // Fallback JSON: qualquer conteúdo no editor JSON OU na conclusão
+      // conta como rascunho sujo. Fechar sem confirmar descarta ambos.
+      return jsonText.trim().length > 0 || conclusao.trim().length > 0;
+    }
+    // Estruturado: qualquer campo numérico preenchido OU conclusão.
+    const hasAnyFieldValue = Object.values(draft).some((v) => v.trim().length > 0);
+    return hasAnyFieldValue || conclusao.trim().length > 0;
+  }, [mode, draft, jsonText, conclusao]);
 
   // Reset interno quando o modal (re)abre.
   // Depende apenas de [open] — não de definicao. O freeze captura a
