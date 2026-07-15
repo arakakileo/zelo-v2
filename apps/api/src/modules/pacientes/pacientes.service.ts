@@ -1,5 +1,12 @@
-import { Injectable, ConflictException, NotFoundException, BadRequestException, Logger } from '@nestjs/common';
+import {
+  Injectable,
+  ConflictException,
+  NotFoundException,
+  BadRequestException,
+  Logger,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { Prisma, TipoContato } from '@prisma/client';
 import { PrismaService } from '../../common/prisma/prisma.service';
 import { CryptoService, BlindIndexService } from '@zelo/crypto';
 import { CriarPacienteDto } from './dto/criar-paciente.dto';
@@ -8,6 +15,20 @@ import { AdicionarContatoDto } from './dto/adicionar-contato.dto';
 import { AdicionarEnderecoDto } from './dto/adicionar-endereco.dto';
 
 export interface AuthContext { userId: string }
+
+export interface PacienteContatoPrimario {
+  email: string | null;
+  telefone: string | null;
+}
+
+/**
+ * Payload de contatos primários a sincronizar.
+ * `undefined` = manter (não tocar); `null` = remover (soft-delete); `string` = upsert.
+ */
+interface ContatosPrimariosInput {
+  email?: string | null;
+  telefone?: string | null;
+}
 
 @Injectable()
 export class PacientesService {
@@ -26,6 +47,8 @@ export class PacientesService {
   /**
    * Criar paciente com PII criptografado.
    * O psicólogo logado vira o responsável.
+   * Contatos primários (email/telefone) são sincronizados em `PacienteContato`
+   * na MESMA transação, no máximo 1 EMAIL + 1 TELEFONE.
    */
   async criarPaciente(ctx: AuthContext, dto: CriarPacienteDto) {
     const cpfDigits = dto.cpf.replace(/\D/g, '');
@@ -43,23 +66,50 @@ export class PacientesService {
     const nomeEncrypted = this.crypto.encrypt(dto.nome);
     const cpfEncrypted = this.crypto.encrypt(cpfDigits);
 
-    const paciente = await this.prisma.paciente.create({
-      data: {
-        psicologoResponsavelId: ctx.userId,
-        nomeEncrypted,
-        cpfEncrypted,
-        cpfHash,
-        dataNascimento: dto.dataNascimento ? new Date(dto.dataNascimento) : null,
-        createdById: ctx.userId,
-      },
+    // Preparar contatos primários (validação/normalização centralizadas).
+    const emailNorm = dto.email !== undefined ? this.normalizeEmail(dto.email) : undefined;
+    const telefoneNorm = dto.telefone !== undefined ? this.normalizeTelefone(dto.telefone) : undefined;
+
+    // $transaction: criação do paciente + contatos primários atômicos.
+    const paciente = await this.prisma.$transaction(async (tx) => {
+      const created = await tx.paciente.create({
+        data: {
+          psicologoResponsavelId: ctx.userId,
+          nomeEncrypted,
+          cpfEncrypted,
+          cpfHash,
+          dataNascimento: dto.dataNascimento ? new Date(dto.dataNascimento) : null,
+          createdById: ctx.userId,
+        },
+      });
+
+      if (emailNorm !== undefined) {
+        await this.criarContatoPrimario(tx, created.id, TipoContato.EMAIL, emailNorm, ctx.userId);
+      }
+      if (telefoneNorm !== undefined) {
+        await this.criarContatoPrimario(tx, created.id, TipoContato.TELEFONE, telefoneNorm, ctx.userId);
+      }
+
+      return created;
     });
 
     this.logger.log(`Paciente created: ${paciente.id} por ${ctx.userId}`);
-    return this.mapPaciente(paciente.id, dto.nome, cpfDigits, paciente.dataNascimento, paciente.createdAt);
+    return this.mapPaciente({
+      id: paciente.id,
+      nome: dto.nome,
+      cpf: cpfDigits,
+      dataNascimento: paciente.dataNascimento,
+      createdAt: paciente.createdAt,
+      contatosPrimarios: {
+        email: emailNorm ?? null,
+        telefone: telefoneNorm ?? null,
+      },
+    });
   }
 
   /**
    * Listar pacientes do psicólogo.
+   * Inclui os contatos primários (EMAIL + TELEFONE) sem N+1 via `include` agregado.
    */
   async listarPacientes(ctx: AuthContext) {
     const pacientes = await this.prisma.paciente.findMany({
@@ -70,16 +120,25 @@ export class PacientesService {
         cpfEncrypted: true,
         dataNascimento: true,
         createdAt: true,
+        contatos: {
+          where: { deletedAt: null, tipo: { in: [TipoContato.EMAIL, TipoContato.TELEFONE] } },
+          select: { tipo: true, valorEncrypted: true },
+          orderBy: { createdAt: 'asc' },
+        },
       },
       orderBy: { createdAt: 'desc' },
     });
-    return pacientes.map((p) => ({
-      id: p.id,
-      nome: this.crypto.decrypt(p.nomeEncrypted),
-      cpf: this.crypto.decrypt(p.cpfEncrypted),
-      dataNascimento: p.dataNascimento,
-      createdAt: p.createdAt,
-    }));
+    return pacientes.map((p) => {
+      const primarios = this.contatosPrimariosFromRows(p.contatos);
+      return this.mapPaciente({
+        id: p.id,
+        nome: this.crypto.decrypt(p.nomeEncrypted),
+        cpf: this.crypto.decrypt(p.cpfEncrypted),
+        dataNascimento: p.dataNascimento,
+        createdAt: p.createdAt,
+        contatosPrimarios: primarios,
+      });
+    });
   }
 
   async obterPaciente(ctx: AuthContext, pacienteId: string) {
@@ -92,26 +151,24 @@ export class PacientesService {
         dataNascimento: true,
         createdAt: true,
         contatos: {
-          where: { deletedAt: null },
-          select: { id: true, tipo: true, valorEncrypted: true },
+          where: { deletedAt: null, tipo: { in: [TipoContato.EMAIL, TipoContato.TELEFONE] } },
+          select: { tipo: true, valorEncrypted: true },
+          orderBy: { createdAt: 'asc' },
         },
       },
     });
     if (!paciente) {
       throw new NotFoundException('Paciente não encontrado');
     }
-    return {
+    const primarios = this.contatosPrimariosFromRows(paciente.contatos);
+    return this.mapPaciente({
       id: paciente.id,
       nome: this.crypto.decrypt(paciente.nomeEncrypted),
       cpf: this.crypto.decrypt(paciente.cpfEncrypted),
       dataNascimento: paciente.dataNascimento,
       createdAt: paciente.createdAt,
-      contatos: paciente.contatos.map((c) => ({
-        id: c.id,
-        tipo: c.tipo,
-        valor: this.crypto.decrypt(c.valorEncrypted),
-      })),
-    };
+      contatosPrimarios: primarios,
+    });
   }
 
   async atualizarPaciente(ctx: AuthContext, pacienteId: string, dto: AtualizarPacienteDto) {
@@ -122,13 +179,60 @@ export class PacientesService {
     if (!paciente) throw new NotFoundException('Paciente não encontrado');
 
     const updateData: Record<string, unknown> = { updatedById: ctx.userId };
-    if (dto.nome) updateData['nomeEncrypted'] = this.crypto.encrypt(dto.nome);
-    if (dto.dataNascimento) updateData['dataNascimento'] = new Date(dto.dataNascimento);
+    if (dto.nome !== undefined) updateData['nomeEncrypted'] = this.crypto.encrypt(dto.nome);
+    if (dto.dataNascimento !== undefined) {
+      updateData['dataNascimento'] = new Date(dto.dataNascimento);
+    }
 
-    await this.prisma.paciente.update({ where: { id: pacienteId }, data: updateData });
+    // Normaliza ANTES de abrir a transação (validação falha-fast).
+    const contatosInput: ContatosPrimariosInput = {};
+    if (dto.email !== undefined) {
+      contatosInput.email = dto.email === null ? null : this.normalizeEmail(dto.email);
+    }
+    if (dto.telefone !== undefined) {
+      contatosInput.telefone = dto.telefone === null ? null : this.normalizeTelefone(dto.telefone);
+    }
 
-    const nome = dto.nome ?? this.crypto.decrypt(paciente.nomeEncrypted);
-    return this.mapPaciente(paciente.id, nome, '', paciente.dataNascimento, paciente.createdAt);
+    const result = await this.prisma.$transaction(async (tx) => {
+      if (Object.keys(updateData).length > 1 || dto.nome !== undefined || dto.dataNascimento !== undefined) {
+        await tx.paciente.update({ where: { id: pacienteId }, data: updateData });
+      }
+
+      // Sincroniza contatos primários se algum foi enviado.
+      if (dto.email !== undefined) {
+        await this.syncContatoPrimario(tx, pacienteId, TipoContato.EMAIL, contatosInput.email!, ctx.userId);
+      }
+      if (dto.telefone !== undefined) {
+        await this.syncContatoPrimario(tx, pacienteId, TipoContato.TELEFONE, contatosInput.telefone!, ctx.userId);
+      }
+
+      // Releitura após sync para devolver dados atualizados.
+      return tx.paciente.findUniqueOrThrow({
+        where: { id: pacienteId },
+        select: {
+          id: true,
+          nomeEncrypted: true,
+          cpfEncrypted: true,
+          dataNascimento: true,
+          createdAt: true,
+          contatos: {
+            where: { deletedAt: null, tipo: { in: [TipoContato.EMAIL, TipoContato.TELEFONE] } },
+            select: { tipo: true, valorEncrypted: true },
+            orderBy: { createdAt: 'asc' },
+          },
+        },
+      });
+    });
+
+    const primarios = this.contatosPrimariosFromRows(result.contatos);
+    return this.mapPaciente({
+      id: result.id,
+      nome: this.crypto.decrypt(result.nomeEncrypted),
+      cpf: this.crypto.decrypt(result.cpfEncrypted),
+      dataNascimento: result.dataNascimento,
+      createdAt: result.createdAt,
+      contatosPrimarios: primarios,
+    });
   }
 
   async removerPaciente(ctx: AuthContext, pacienteId: string) {
@@ -250,6 +354,8 @@ export class PacientesService {
     return { mensagem: 'Endereço removido' };
   }
 
+  // ─── Helpers internos ──────────────────────────────────────────────
+
   private async buscarPacienteParaEdicao(ctx: AuthContext, pacienteId: string) {
     const p = await this.prisma.paciente.findFirst({
       where: { id: pacienteId, psicologoResponsavelId: ctx.userId, deletedAt: null },
@@ -257,6 +363,173 @@ export class PacientesService {
     });
     if (!p) throw new NotFoundException('Paciente não encontrado');
     return p;
+  }
+
+  /**
+   * Cria um contato primário (1 EMAIL ou 1 TELEFONE) para o paciente.
+   * Assume que não existe outro contato ativo do mesmo tipo (uso em `criarPaciente`).
+   * Idempotência a nível de domínio: se já houver contato ativo do mesmo
+   * tipo com o mesmo valor (mesmo hash), é no-op (sem duplicação).
+   */
+  private async criarContatoPrimario(
+    tx: Prisma.TransactionClient,
+    pacienteId: string,
+    tipo: TipoContato,
+    valorNormalizado: string,
+    userId: string,
+  ): Promise<void> {
+    const valorHash = this.hashForTipo(tipo, valorNormalizado);
+    const valorEncrypted = this.crypto.encrypt(valorNormalizado);
+
+    // Se já existe contato ativo do mesmo tipo com mesmo hash, é no-op.
+    const existing = await tx.pacienteContato.findFirst({
+      where: { pacienteId, tipo, valorHash, deletedAt: null },
+      select: { id: true },
+    });
+    if (existing) return;
+
+    await tx.pacienteContato.create({
+      data: { pacienteId, tipo, valorEncrypted, valorHash },
+    });
+    void userId;
+  }
+
+  /**
+   * Sincroniza o contato primário de um tipo (EMAIL ou TELEFONE) conforme input:
+   *  - `string` (não-null): upsert — se já houver contato ativo com mesmo hash, no-op;
+   *    senão, soft-deleta o anterior e cria o novo.
+   *  - `null`: soft-deleta qualquer contato ativo do tipo.
+   *
+   * Garante no máximo 1 contato ativo do tipo (regra de "primário").
+   */
+  private async syncContatoPrimario(
+    tx: Prisma.TransactionClient,
+    pacienteId: string,
+    tipo: TipoContato,
+    valor: string | null,
+    userId: string,
+  ): Promise<void> {
+    if (valor === null) {
+      // Soft-delete de todos os contatos ativos do tipo.
+      const ativos = await tx.pacienteContato.findMany({
+        where: { pacienteId, tipo, deletedAt: null },
+        select: { id: true },
+      });
+      if (ativos.length === 0) return;
+      await tx.pacienteContato.updateMany({
+        where: { id: { in: ativos.map((a) => a.id) } },
+        data: { deletedAt: new Date() },
+      });
+      this.logger.log(
+        `Contato primário removido (soft-delete): paciente=${pacienteId} tipo=${tipo} qtd=${ativos.length} user=${userId}`,
+      );
+      return;
+    }
+
+    const valorHash = this.hashForTipo(tipo, valor);
+    const valorEncrypted = this.crypto.encrypt(valor);
+
+    // Se já existe ativo com mesmo hash, no-op (sem duplicação).
+    const existenteIgual = await tx.pacienteContato.findFirst({
+      where: { pacienteId, tipo, valorHash, deletedAt: null },
+      select: { id: true },
+    });
+    if (existenteIgual) return;
+
+    // Soft-deleta qualquer outro contato ativo do mesmo tipo (regra do primário: 1 por tipo).
+    const outrosAtivos = await tx.pacienteContato.findMany({
+      where: { pacienteId, tipo, deletedAt: null },
+      select: { id: true },
+    });
+    if (outrosAtivos.length > 0) {
+      await tx.pacienteContato.updateMany({
+        where: { id: { in: outrosAtivos.map((o) => o.id) } },
+        data: { deletedAt: new Date() },
+      });
+    }
+
+    await tx.pacienteContato.create({
+      data: { pacienteId, tipo, valorEncrypted, valorHash },
+    });
+    this.logger.log(
+      `Contato primário upsert: paciente=${pacienteId} tipo=${tipo} user=${userId}`,
+    );
+  }
+
+  /**
+   * Normaliza email: trim + lowercase. Valida formato (delegado ao class-validator no DTO;
+   * aqui só reforçamos que há @ e não é vazio).
+   */
+  private normalizeEmail(raw: string): string {
+    const trimmed = raw.trim().toLowerCase();
+    if (trimmed.length === 0) {
+      throw new BadRequestException('Email não pode ser vazio');
+    }
+    if (!trimmed.includes('@')) {
+      throw new BadRequestException('Email inválido');
+    }
+    return trimmed;
+  }
+
+  /**
+   * Normaliza telefone: aceita formato humano, retorna forma "humana canônica"
+   * preservando DDD. Hash é gerado sobre os dígitos.
+   * Para o campo `valor` exposto ao usuário, mantemos formato humano
+   * (re-aplicado a partir dos dígitos para evitar drift de formatação).
+   */
+  private normalizeTelefone(raw: string): string {
+    const digits = raw.replace(/\D/g, '');
+    if (digits.length < 10 || digits.length > 11) {
+      throw new BadRequestException(
+        'Telefone inválido: esperado 10 ou 11 dígitos (DDD + número)',
+      );
+    }
+    // Reaplica formato humano canônico (BR): (DD) NNNN-NNNN ou (DD) 9NNNN-NNNN.
+    const ddd = digits.slice(0, 2);
+    if (digits.length === 11) {
+      const n1 = digits.slice(2, 7);
+      const n2 = digits.slice(7, 11);
+      return `(${ddd}) ${n1}-${n2}`;
+    }
+    const n1 = digits.slice(2, 6);
+    const n2 = digits.slice(6, 10);
+    return `(${ddd}) ${n1}-${n2}`;
+  }
+
+  private hashForTipo(tipo: TipoContato, valor: string): string {
+    if (tipo === TipoContato.EMAIL) {
+      return this.blindIndex.hashEmail(valor);
+    }
+    return this.blindIndex.hashPhone(valor);
+  }
+
+  private contatosPrimariosFromRows(
+    rows: Array<{ tipo: TipoContato; valorEncrypted: string }>,
+  ): PacienteContatoPrimario {
+    let email: string | null = null;
+    let telefone: string | null = null;
+    for (const r of rows) {
+      const v = this.crypto.decrypt(r.valorEncrypted);
+      if (r.tipo === TipoContato.EMAIL && email === null) email = v;
+      else if (r.tipo === TipoContato.TELEFONE && telefone === null) telefone = v;
+    }
+    return { email, telefone };
+  }
+
+  private mapPaciente(args: {
+    id: string;
+    nome: string;
+    cpf: string;
+    dataNascimento: Date | null;
+    createdAt: Date;
+    contatosPrimarios: PacienteContatoPrimario;
+  }) {
+    const { contatosPrimarios, ...rest } = args;
+    return {
+      ...rest,
+      email: contatosPrimarios.email,
+      telefone: contatosPrimarios.telefone,
+    };
   }
 
   /**
@@ -293,9 +566,5 @@ export class PacientesService {
     if (dv2 !== dv2Calc) {
       throw new BadRequestException('CPF inválido. Confira os 11 dígitos e tente novamente.');
     }
-  }
-
-  private mapPaciente(id: string, nome: string, cpf: string, dataNascimento: Date | null, createdAt: Date) {
-    return { id, nome, cpf, dataNascimento, createdAt };
   }
 }

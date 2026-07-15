@@ -11,6 +11,7 @@ import {
   createMockPrismaService,
   createMockConfigService,
 } from '../../test-utils';
+import { CryptoService } from '@zelo/crypto';
 
 describe('PacientesService', () => {
   let service: PacientesService;
@@ -101,6 +102,73 @@ describe('PacientesService', () => {
       const createCall = mockPrisma.paciente.create.mock.calls[0][0];
       expect(createCall.data.psicologoResponsavelId).toBe('psico-1');
     });
+
+    it('creates email + telefone primary contacts in the same transaction', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
+      mockPrisma.paciente.create.mockResolvedValue({
+        id: 'pac-1',
+        dataNascimento: null,
+        createdAt: new Date(),
+      });
+      // syncContatoPrimario will lookup existing → null → create
+      mockPrisma.pacienteContato.findFirst.mockResolvedValue(null);
+      mockPrisma.pacienteContato.create.mockResolvedValue({});
+
+      const result = await service.criarPaciente(adminCtx, {
+        ...validDto,
+        email: 'Joao@Email.com  ',
+        telefone: '(11) 98765-4321',
+      });
+
+      // create wrapped in $transaction
+      expect(mockPrisma.$transaction).toHaveBeenCalled();
+      // Two contact creates (EMAIL + TELEFONE)
+      expect(mockPrisma.pacienteContato.create).toHaveBeenCalledTimes(2);
+      // normalized email + telefone reflected in response
+      expect(result.email).toBe('joao@email.com');
+      expect(result.telefone).toBe('(11) 98765-4321');
+      // contato create payloads: EMAIL with trimmed/lowercased + TELEFONE canonical
+      const emailCall = mockPrisma.pacienteContato.create.mock.calls.find(
+        (c: any[]) => c[0].data.tipo === 'EMAIL',
+      );
+      const telCall = mockPrisma.pacienteContato.create.mock.calls.find(
+        (c: any[]) => c[0].data.tipo === 'TELEFONE',
+      );
+      expect(emailCall[0].data.valorEncrypted).toBeDefined();
+      expect(emailCall[0].data.valorHash).toBeDefined();
+      expect(telCall[0].data.valorEncrypted).toBeDefined();
+      expect(telCall[0].data.valorHash).toBeDefined();
+    });
+
+    it('rejects empty email after trim with BadRequestException', async () => {
+          mockPrisma.paciente.findFirst.mockResolvedValue(null);
+          mockPrisma.paciente.create.mockResolvedValue({
+            id: 'pac-1',
+            dataNascimento: null,
+            createdAt: new Date(),
+          });
+
+          // Class-validator catches empty before service, but service-side normalize
+          // also rejects. We bypass class-validator by passing whitespace via DTO
+          // would still be caught at @IsEmail. Instead, ensure that internal
+          // normalize throws when given empty post-trim.
+          await expect(
+            service.criarPaciente(adminCtx, { ...validDto, email: '   ' } as any),
+          ).rejects.toThrow(BadRequestException);
+        });
+
+        it('rejects invalid phone format with BadRequestException', async () => {
+          mockPrisma.paciente.findFirst.mockResolvedValue(null);
+          mockPrisma.paciente.create.mockResolvedValue({
+            id: 'pac-1',
+            dataNascimento: null,
+            createdAt: new Date(),
+          });
+
+          await expect(
+            service.criarPaciente(adminCtx, { ...validDto, telefone: '12345' } as any),
+          ).rejects.toThrow(BadRequestException);
+        });
   });
 
   describe('listarPacientes', () => {
@@ -115,7 +183,7 @@ describe('PacientesService', () => {
           cpfEncrypted: crypto.encrypt('12345678900'),
           dataNascimento: null,
           createdAt: new Date(),
-          psicologoResponsavel: { id: 'admin-1', nomeCompleto: 'Dr. Silva' },
+          contatos: [],
         },
       ]);
 
@@ -126,6 +194,9 @@ describe('PacientesService', () => {
       expect(findCall.where.psicologoResponsavelId).toBe('admin-1');
       expect(findCall.where.clinicaId).toBeUndefined();
       expect(result).toHaveLength(1);
+      // Sem contatos primários cadastrados → email/telefone nulos
+      expect(result[0]!.email).toBeNull();
+      expect(result[0]!.telefone).toBeNull();
     });
 
     it('PSICOLOGO is filtered to only their patients', async () => {
@@ -137,7 +208,7 @@ describe('PacientesService', () => {
       expect(findCall.where.psicologoResponsavelId).toBe('psico-1');
     });
 
-    it('decrypts patient name and CPF in results', async () => {
+    it('decrypts patient name, CPF, email and telefone in results', async () => {
       // Use real CryptoService to produce valid encrypted envelopes
       const { CryptoService } = await import('@zelo/crypto');
       const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
@@ -149,7 +220,10 @@ describe('PacientesService', () => {
           cpfEncrypted: crypto.encrypt('12345678900'),
           dataNascimento: null,
           createdAt: new Date(),
-          psicologoResponsavel: { id: 'psico-1', nomeCompleto: 'Dr. Silva' },
+          contatos: [
+            { tipo: 'EMAIL', valorEncrypted: crypto.encrypt('joao@email.com') },
+            { tipo: 'TELEFONE', valorEncrypted: crypto.encrypt('(11) 98765-4321') },
+          ],
         },
       ]);
 
@@ -157,6 +231,39 @@ describe('PacientesService', () => {
 
       expect(result[0]!.nome).toBe('João Silva');
       expect(result[0]!.cpf).toBe('12345678900');
+      expect(result[0]!.email).toBe('joao@email.com');
+      expect(result[0]!.telefone).toBe('(11) 98765-4321');
+      // Garante que NÃO vaza ciphertext/hash/CPF interno
+      expect((result[0] as any).valorEncrypted).toBeUndefined();
+      expect((result[0] as any).valorHash).toBeUndefined();
+    });
+
+    it('exposes email and telefone as null when contact rows are absent', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+      mockPrisma.paciente.findMany.mockResolvedValue([
+        {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('Sem Contato'),
+          cpfEncrypted: crypto.encrypt('52998224725'),
+          dataNascimento: null,
+          createdAt: new Date(),
+          contatos: [],
+        },
+      ]);
+
+      const result = await service.listarPacientes(adminCtx);
+      expect(result[0]!.email).toBeNull();
+      expect(result[0]!.telefone).toBeNull();
+    });
+
+    it('does not N+1 — uses a single findMany with include on contatos', async () => {
+      mockPrisma.paciente.findMany.mockResolvedValue([]);
+      await service.listarPacientes(adminCtx);
+      expect(mockPrisma.paciente.findMany).toHaveBeenCalledTimes(1);
+      const select = mockPrisma.paciente.findMany.mock.calls[0][0].select;
+      // contatos is part of the same select — no extra roundtrip
+      expect(select.contatos).toBeDefined();
     });
   });
 
@@ -179,6 +286,163 @@ describe('PacientesService', () => {
 
       const findCall = mockPrisma.paciente.findFirst.mock.calls[0][0];
       expect(findCall.where.psicologoResponsavelId).toBe('psico-1');
+    });
+
+    it('decrypts email/telefone from primary contacts without leaking ciphertext', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.paciente.findFirst.mockResolvedValue({
+        id: 'p1',
+        nomeEncrypted: crypto.encrypt('Maria'),
+        cpfEncrypted: crypto.encrypt('52998224725'),
+        dataNascimento: null,
+        createdAt: new Date(),
+        contatos: [
+          { tipo: 'EMAIL', valorEncrypted: crypto.encrypt('maria@x.com') },
+          { tipo: 'TELEFONE', valorEncrypted: crypto.encrypt('(11) 91234-5678') },
+        ],
+      });
+
+      const result = await service.obterPaciente(adminCtx, 'p1');
+      expect(result.email).toBe('maria@x.com');
+      expect(result.telefone).toBe('(11) 91234-5678');
+      expect((result as any).valorEncrypted).toBeUndefined();
+    });
+  });
+
+  describe('atualizarPaciente — primary contacts sync', () => {
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+    const pacienteExistente = {
+      id: 'pac-1',
+      nomeEncrypted: crypto.encrypt('Maria'),
+      cpfEncrypted: crypto.encrypt('52998224725'),
+      dataNascimento: null,
+      createdAt: new Date(),
+    };
+
+    it('omitted email/telefone keeps current values (does not touch contatos)', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(pacienteExistente);
+      mockPrisma.paciente.update.mockResolvedValue({});
+      mockPrisma.paciente.findUniqueOrThrow.mockResolvedValue({
+        ...pacienteExistente,
+        contatos: [
+          { tipo: 'EMAIL', valorEncrypted: crypto.encrypt('maria@x.com') },
+          { tipo: 'TELEFONE', valorEncrypted: crypto.encrypt('(11) 91234-5678') },
+        ],
+      });
+
+      await service.atualizarPaciente(adminCtx, 'pac-1', { nome: 'Maria S.' });
+
+      // Apenas o paciente foi atualizado; nenhum sync de contato.
+      expect(mockPrisma.pacienteContato.findFirst).not.toHaveBeenCalled();
+      expect(mockPrisma.pacienteContato.create).not.toHaveBeenCalled();
+      expect(mockPrisma.pacienteContato.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('updates only email when only email is provided', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(pacienteExistente);
+      mockPrisma.paciente.update.mockResolvedValue({});
+      // No existing matching email → create
+      mockPrisma.pacienteContato.findFirst.mockResolvedValue(null);
+      mockPrisma.pacienteContato.create.mockResolvedValue({});
+      mockPrisma.pacienteContato.findMany.mockResolvedValue([
+        { id: 'old-email' },
+      ]);
+      mockPrisma.pacienteContato.updateMany.mockResolvedValue({});
+      mockPrisma.paciente.findUniqueOrThrow.mockResolvedValue({
+        ...pacienteExistente,
+        contatos: [
+          { tipo: 'EMAIL', valorEncrypted: crypto.encrypt('novo@x.com') },
+        ],
+      });
+
+      await service.atualizarPaciente(adminCtx, 'pac-1', {
+        email: 'novo@x.com',
+      });
+
+      // Only EMAIL type was synced
+      const calls = mockPrisma.pacienteContato.findFirst.mock.calls;
+      expect(calls.every((c: any[]) => c[0].where.tipo === 'EMAIL')).toBe(true);
+      expect(mockPrisma.pacienteContato.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('null email soft-deletes primary email contato', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(pacienteExistente);
+      mockPrisma.paciente.update.mockResolvedValue({});
+      mockPrisma.pacienteContato.findMany.mockResolvedValue([{ id: 'old-email' }]);
+      mockPrisma.pacienteContato.updateMany.mockResolvedValue({});
+      mockPrisma.paciente.findUniqueOrThrow.mockResolvedValue({
+        ...pacienteExistente,
+        contatos: [
+          { tipo: 'TELEFONE', valorEncrypted: crypto.encrypt('(11) 91234-5678') },
+        ],
+      });
+
+      const result = await service.atualizarPaciente(adminCtx, 'pac-1', {
+        email: null,
+      });
+
+      // Soft-delete via updateMany (deleteAt = Date)
+      const updateCalls = mockPrisma.pacienteContato.updateMany.mock.calls;
+      expect(updateCalls.length).toBeGreaterThanOrEqual(1);
+      expect(updateCalls[0][0].data.deletedAt).toBeDefined();
+      // telefone mantido
+      expect(result.telefone).toBe('(11) 91234-5678');
+      expect(result.email).toBeNull();
+    });
+
+    it('repeated identical email does NOT create duplicate contato (idempotente)', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(pacienteExistente);
+      mockPrisma.paciente.update.mockResolvedValue({});
+      // Already exists with same hash → no-op
+      mockPrisma.pacienteContato.findFirst.mockResolvedValue({ id: 'existing-email' });
+      mockPrisma.paciente.findUniqueOrThrow.mockResolvedValue({
+        ...pacienteExistente,
+        contatos: [
+          { tipo: 'EMAIL', valorEncrypted: crypto.encrypt('maria@x.com') },
+        ],
+      });
+
+      await service.atualizarPaciente(adminCtx, 'pac-1', {
+        email: '  MARIA@x.com ',
+      });
+
+      // No novo create / updateMany porque já existe com mesmo hash
+      expect(mockPrisma.pacienteContato.create).not.toHaveBeenCalled();
+      expect(mockPrisma.pacienteContato.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('changing email soft-deletes previous email contato and creates the new one', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(pacienteExistente);
+      mockPrisma.paciente.update.mockResolvedValue({});
+      // Existing with same hash → null (we want a different email)
+      mockPrisma.pacienteContato.findFirst.mockResolvedValue(null);
+      mockPrisma.pacienteContato.findMany.mockResolvedValue([{ id: 'old-email' }]);
+      mockPrisma.pacienteContato.updateMany.mockResolvedValue({});
+      mockPrisma.pacienteContato.create.mockResolvedValue({});
+      mockPrisma.paciente.findUniqueOrThrow.mockResolvedValue({
+        ...pacienteExistente,
+        contatos: [
+          { tipo: 'EMAIL', valorEncrypted: crypto.encrypt('novo2@x.com') },
+        ],
+      });
+
+      await service.atualizarPaciente(adminCtx, 'pac-1', {
+        email: 'novo2@x.com',
+      });
+
+      // Old soft-deleted via updateMany + new create
+      expect(mockPrisma.pacienteContato.updateMany).toHaveBeenCalledTimes(1);
+      expect(mockPrisma.pacienteContato.create).toHaveBeenCalledTimes(1);
+    });
+
+    it('throws NotFound when updating another psicólogos patient', async () => {
+      mockPrisma.paciente.findFirst.mockResolvedValue(null);
+      await expect(
+        service.atualizarPaciente(psicologoCtx, 'pac-other', { nome: 'X' }),
+      ).rejects.toThrow(NotFoundException);
     });
   });
 
@@ -227,7 +491,6 @@ describe('PacientesService', () => {
         cpfEncrypted: crypto.encrypt('12345678900'),
         dataNascimento: null,
         createdAt: new Date(),
-        psicologoResponsavel: { id: 'admin-1', nomeCompleto: 'Admin' },
       });
 
       const result = await service.buscarPorCpf(adminCtx, '12345678900');
