@@ -76,17 +76,24 @@ export function RespostaWizardModal({
   const conclusaoErrorId = useId();
   const jsonErrorId = useId();
 
-  const mode: WizardMode = useMemo(() => {
-    if (definicao && definicao.fields.length > 0) return 'estruturado';
-    return 'fallback-json';
-  }, [definicao]);
+  // Snapshot da definição congelada no momento em que o modal abre.
+  // Se a definição chega tarde (catálogo async), não queremos resetar
+  // draft/conclusão/JSON no meio da digitação. O freeze captura a
+  // definição mais recente disponível quando open=true e não muda mais
+  // até fechar/reabrir.
+  const [frozenDefinicao, setFrozenDefinicao] = useState<CatalogEntryEstruturado | null>(null);
 
-  const steps = useMemo(() => buildSteps(definicao), [definicao]);
+  const mode: WizardMode = useMemo(() => {
+    if (frozenDefinicao && frozenDefinicao.fields.length > 0) return 'estruturado';
+    return 'fallback-json';
+  }, [frozenDefinicao]);
+
+  const steps = useMemo(() => buildSteps(frozenDefinicao), [frozenDefinicao]);
   const totalSteps = steps.length;
   const [stepIndex, setStepIndex] = useState(0);
 
   const [draft, setDraft] = useState<Record<string, string>>(() =>
-    buildInitialDraft(definicao),
+    buildInitialDraft(frozenDefinicao),
   );
   const [conclusao, setConclusao] = useState('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
@@ -95,22 +102,21 @@ export function RespostaWizardModal({
   const [jsonError, setJsonError] = useState<string | null>(null);
 
   const { submitting, submitError, setSubmitError, handleFormSubmit } =
-    useWizardSubmit({ token, sessaoId, definicao });
+    useWizardSubmit({ token, sessaoId, definicao: frozenDefinicao });
 
   const isDirty = useMemo(() => {
-    if (mode === 'fallback-json') {
-      // No fallback, qualquer um dos dois campos com conteúdo conta como
-      // draft sujo. Fechar com conclusao-only (sem JSON) também precisa
-      // pedir confirmação para preservar o que o usuário escreveu.
-      return jsonText.trim().length > 0 || conclusao.trim().length > 0;
-    }
-    const hasAnyFieldValue = Object.values(draft).some((v) => v.trim().length > 0);
-    return hasAnyFieldValue || conclusao.trim().length > 0;
-  }, [mode, draft, jsonText, conclusao]);
+    // Dirty-check conclusão-only: se o psicólogo escreveu ALGUMA coisa no
+    // campo de conclusão (qualquer modo), pedir confirmação antes de fechar.
+    // Campos numéricos/JSON não contam — o usuário pode ter só clicado.
+    return conclusao.trim().length > 0;
+  }, [conclusao]);
 
   // Reset interno quando o modal (re)abre.
+  // Depende apenas de [open] — não de definicao. O freeze captura a
+  // definição mais recente aqui; chegada tardia do catálogo não reinicializa.
   useEffect(() => {
     if (open) {
+      setFrozenDefinicao(definicao);
       setStepIndex(0);
       setDraft(buildInitialDraft(definicao));
       setConclusao('');
@@ -120,7 +126,7 @@ export function RespostaWizardModal({
       setJsonError(null);
       setSubmitError('');
     }
-  }, [open, definicao, setSubmitError]);
+  }, [open]);
 
   const requestClose = useCallback(() => {
     if (submitting) return;
@@ -204,7 +210,7 @@ export function RespostaWizardModal({
           testeSigla={testeSigla}
           testeNome={testeNome}
           mode={mode}
-          definicao={definicao}
+          definicao={frozenDefinicao}
           submitting={submitting}
           onClose={requestClose}
         />
@@ -216,7 +222,14 @@ export function RespostaWizardModal({
         )}
 
         <form
-          onSubmit={(event) =>
+          onSubmit={(event) => {
+            // Submit guard: em modo estruturado, o formulário só finaliza na
+            // etapa de revisão. Enter em um field step NÃO dispara submit.
+            // Previne finalização prematura via teclado.
+            if (mode === 'estruturado' && currentStep?.kind !== 'review') {
+              event.preventDefault();
+              return;
+            }
             handleFormSubmit(event, mode, draft, jsonText, conclusao, (outcome) => {
               if (outcome.kind === 'success') {
                 onFinalizado();
@@ -230,7 +243,7 @@ export function RespostaWizardModal({
               // validation inline: hook já atualizou submitError
               onError('validation', null);
             })
-          }
+          }}
           className="flex min-h-0 flex-1 flex-col"
         >
           <WizardBody
@@ -246,7 +259,7 @@ export function RespostaWizardModal({
             jsonError={jsonError}
             jsonErrorId={jsonErrorId}
             submitError={submitError}
-            definicao={definicao}
+            definicao={frozenDefinicao}
             onDraftChange={updateDraft}
             onConclusaoChange={updateConclusao}
             onJsonTextChange={updateJsonText}

@@ -7,6 +7,7 @@ import {
   finalizarSessao,
   parseFallbackRespostas,
   validateConclusao,
+  validateField,
   type WizardSubmitError,
 } from './wizard.helpers';
 
@@ -67,13 +68,15 @@ export function useWizardSubmit({ token, sessaoId, definicao }: UseWizardSubmitA
         const flat: Record<string, number> = {};
         for (const field of definicao?.fields ?? []) {
           const raw = draft[field.key] ?? '';
-          const n = Number(raw);
-          if (!Number.isFinite(n)) {
-            const msg = `Campo "${field.label}" inválido.`;
+          // Preflight: valida vazio + formato antes de converter.
+          // Number('')===0 — sem isto, campo em branco vira 0 silenciosamente.
+          const fieldErr = validateField(raw);
+          if (fieldErr) {
+            const msg = `Campo "${field.label}": ${fieldErr}`;
             setSubmitError(msg);
             return { kind: 'validation', message: msg };
           }
-          flat[field.key] = n;
+          flat[field.key] = Number(raw);
         }
         if (Object.keys(flat).length === 0) {
           const msg = 'Nenhuma resposta informada.';
