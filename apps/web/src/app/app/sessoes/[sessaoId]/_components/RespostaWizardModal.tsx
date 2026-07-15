@@ -1,14 +1,6 @@
 'use client';
 
-import {
-  useCallback,
-  useEffect,
-  useId,
-  useMemo,
-  useRef,
-  useState,
-  type FormEvent,
-} from 'react';
+import { useCallback, useEffect, useId, useMemo, useState } from 'react';
 import {
   CatalogEntryEstruturado,
   RelatorioSessao,
@@ -24,13 +16,12 @@ import { WizardStepFallback } from './wizard/WizardStepFallback';
 import {
   buildInitialDraft,
   buildSteps,
-  finalizarSessao,
-  parseFallbackRespostas,
   validateConclusao,
   validateField,
   type FieldErrors,
-  type WizardSubmitError,
 } from './wizard/wizard.helpers';
+import { useDialogLifecycle } from './wizard/useDialogLifecycle';
+import { useWizardSubmit } from './wizard/useWizardSubmit';
 
 // ─── Tipos públicos do modal ────────────────────────────────────────────────
 
@@ -53,19 +44,21 @@ export interface RespostaWizardModalProps {
   /**
    * Callback de erro: disparado quando o POST falha.
    *  - `reason: 'mutated'` → o backend indica que a sessão MUDOU de estado
-   *    (BLOQUEADO_REGRA / FINALIZADO). O parent deve fechar o modal,
-   *    recarregar o relatório e mostrar o estado atualizado.
-   *  - `reason: 'validation'` → erro de validação sem mutação (422 com
-   *    payload de erro). O modal mantém draft + mensagem interna.
+   *    (HTTP 422 → BLOQUEADO_REGRA ou 200 que volta sessão finalizada).
+   *    O parent deve fechar o modal, recarregar o relatório e mostrar o
+   *    estado atualizado.
+   *  - `reason: 'validation'` → erro de validação sem mutação. O modal
+   *    mantém draft + mensagem interna.
    * `sessao` traz o estado atual da sessão quando o backend o envia no body
-   * de erro (ajuda o parent a evitar um round-trip extra); pode ser `null`.
+   * de erro (ajuda o parent a evitar um round-trip extra); pode ser `null`
+   * — em particular, o body 422 do backend NÃO traz `sessao`.
    */
   onError: (reason: WizardErrorReason, sessao: RelatorioSessao | null) => void;
 }
 
 type WizardMode = 'estruturado' | 'fallback-json';
 
-// ─── Componente ─────────────────────────────────────────────────────────────
+// ─── Componente orquestrador ───────────────────────────────────────────────
 
 export function RespostaWizardModal({
   open,
@@ -83,9 +76,6 @@ export function RespostaWizardModal({
   const conclusaoErrorId = useId();
   const jsonErrorId = useId();
 
-  const dialogRef = useRef<HTMLDialogElement | null>(null);
-  const previouslyFocusedRef = useRef<HTMLElement | null>(null);
-
   const mode: WizardMode = useMemo(() => {
     if (definicao && definicao.fields.length > 0) return 'estruturado';
     return 'fallback-json';
@@ -101,12 +91,11 @@ export function RespostaWizardModal({
   const [conclusao, setConclusao] = useState('');
   const [fieldErrors, setFieldErrors] = useState<FieldErrors>({});
   const [conclusaoError, setConclusaoError] = useState<string | null>(null);
-
   const [jsonText, setJsonText] = useState('');
   const [jsonError, setJsonError] = useState<string | null>(null);
 
-  const [submitting, setSubmitting] = useState(false);
-  const [submitError, setSubmitError] = useState('');
+  const { submitting, submitError, setSubmitError, handleFormSubmit } =
+    useWizardSubmit({ token, sessaoId, definicao });
 
   const isDirty = useMemo(() => {
     if (mode === 'fallback-json') return jsonText.trim().length > 0;
@@ -125,27 +114,8 @@ export function RespostaWizardModal({
       setJsonText('');
       setJsonError(null);
       setSubmitError('');
-      setSubmitting(false);
     }
-  }, [open, definicao]);
-
-  // <dialog> nativo: showModal/close imperativo. Foco trap vem do browser.
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    if (open) {
-      if (!dialog.open) {
-        previouslyFocusedRef.current =
-          typeof document !== 'undefined'
-            ? (document.activeElement as HTMLElement | null)
-            : null;
-        dialog.showModal();
-      }
-    } else {
-      if (dialog.open) dialog.close();
-      previouslyFocusedRef.current?.focus?.();
-    }
-  }, [open]);
+  }, [open, definicao, setSubmitError]);
 
   const requestClose = useCallback(() => {
     if (submitting) return;
@@ -158,29 +128,7 @@ export function RespostaWizardModal({
     onClose();
   }, [submitting, isDirty, onClose]);
 
-  // <dialog> dispara `cancel` antes de fechar no Esc — preventDefault +
-  // dirty-check determinam se fechamos de fato.
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const handleCancel = (event: Event) => {
-      event.preventDefault();
-      requestClose();
-    };
-    dialog.addEventListener('cancel', handleCancel);
-    return () => dialog.removeEventListener('cancel', handleCancel);
-  }, [requestClose]);
-
-  // Click no backdrop (área fora do conteúdo) = fechar.
-  useEffect(() => {
-    const dialog = dialogRef.current;
-    if (!dialog) return;
-    const handleClick = (event: MouseEvent) => {
-      if (event.target === dialog) requestClose();
-    };
-    dialog.addEventListener('click', handleClick);
-    return () => dialog.removeEventListener('click', handleClick);
-  }, [requestClose]);
+  const dialogRef = useDialogLifecycle(open, requestClose);
 
   const currentStep = steps[stepIndex];
   const currentFieldError =
@@ -209,7 +157,6 @@ export function RespostaWizardModal({
       }
       setConclusaoError(null);
       setStepIndex((idx) => Math.min(idx + 1, totalSteps - 1));
-      return;
     }
   }
 
@@ -217,7 +164,6 @@ export function RespostaWizardModal({
     setStepIndex((idx) => Math.max(idx - 1, 0));
   }
 
-  // Edição limpa o erro automaticamente — o parent não precisa orquestrar.
   function updateDraft(fieldKey: string, value: string) {
     setDraft((prev) => ({ ...prev, [fieldKey]: value }));
     if (fieldErrors[fieldKey]) {
@@ -231,77 +177,6 @@ export function RespostaWizardModal({
   function updateJsonText(value: string) {
     setJsonText(value);
     if (jsonError !== null) setJsonError(null);
-  }
-
-  async function handleSubmit(event: FormEvent<HTMLFormElement>) {
-    event.preventDefault();
-    if (!token) return;
-    if (submitting) return;
-
-    let dadosRespostas: Record<string, number>;
-    if (mode === 'fallback-json') {
-      const parsed = parseFallbackRespostas(jsonText);
-      if (!parsed.ok) {
-        setJsonError(parsed.error ?? 'JSON inválido.');
-        return;
-      }
-      setJsonError(null);
-      const errC = validateConclusao(conclusao);
-      if (errC) {
-        setConclusaoError(errC);
-        return;
-      }
-      setConclusaoError(null);
-      dadosRespostas = parsed.data;
-    } else {
-      const flat: Record<string, number> = {};
-      for (const field of definicao?.fields ?? []) {
-        const raw = draft[field.key] ?? '';
-        const n = Number(raw);
-        if (!Number.isFinite(n)) {
-          setSubmitError(`Campo "${field.label}" inválido.`);
-          return;
-        }
-        flat[field.key] = n;
-      }
-      if (Object.keys(flat).length === 0) {
-        setSubmitError('Nenhuma resposta informada.');
-        return;
-      }
-      const errC = validateConclusao(conclusao);
-      if (errC) {
-        setConclusaoError(errC);
-        return;
-      }
-      setConclusaoError(null);
-      dadosRespostas = flat;
-    }
-
-    setSubmitting(true);
-    setSubmitError('');
-    try {
-      await finalizarSessao({
-        token,
-        sessaoId,
-        dadosRespostas,
-        conclusao: conclusao.trim(),
-      });
-      onFinalizado();
-    } catch (err) {
-      const e = err as WizardSubmitError;
-      if (e.mutated) {
-        // Servidor mutou a sessão (ex: BLOQUEADO_REGRA após 422).
-        // Fecha modal e notifica parent pra recarregar relatório.
-        setSubmitError('');
-        onError('mutated', e.sessao ?? null);
-      } else {
-        // Erro de validação sem mutação: mantém modal+draft+mensagem interna.
-        setSubmitError(e.message || 'Erro ao finalizar sessão');
-        onError('validation', null);
-      }
-    } finally {
-      setSubmitting(false);
-    }
   }
 
   return (
@@ -319,150 +194,296 @@ export function RespostaWizardModal({
           ' mx-auto mt-[max(2rem,10vh)] flex w-full max-w-2xl flex-col overflow-hidden p-0 max-h-[calc(100vh-4rem)]'
         }
       >
-        <header className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-4">
-          <div className="min-w-0">
-            <p className="text-xs uppercase tracking-wide text-white/40">
-              Registrar respostas
-            </p>
-            <h2 id={titleId} className="mt-1 truncate text-lg font-semibold text-white">
-              {testeSigla} — {testeNome}
-            </h2>
-            {mode === 'estruturado' && definicao && (
-              <p className="mt-1 text-xs text-white/45">
-                Definição estruturada — {definicao.fields.length} campos.
-              </p>
-            )}
-            {mode === 'fallback-json' && (
-              <p className="mt-1 text-xs text-amber-300/70">
-                Sem definição estruturada — usando editor JSON avançado.
-              </p>
-            )}
-          </div>
-          <button
-            type="button"
-            onClick={requestClose}
-            disabled={submitting}
-            aria-label="Fechar modal"
-            className="rounded-lg p-1.5 text-white/55 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            <span aria-hidden="true" className="text-lg leading-none">×</span>
-          </button>
-        </header>
+        <WizardHeader
+          titleId={titleId}
+          testeSigla={testeSigla}
+          testeNome={testeNome}
+          mode={mode}
+          definicao={definicao}
+          submitting={submitting}
+          onClose={requestClose}
+        />
 
-        {mode === 'fallback-json' && (
-          <div className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-3 text-xs text-amber-200">
-            Este teste não possui definição estruturada no catálogo atual, ou o
-            catálogo não pôde ser carregado. Estamos usando o editor JSON
-            avançado: você é responsável por enviar um objeto não-vazio com
-            todos os valores numéricos finitos.
-          </div>
-        )}
+        {mode === 'fallback-json' && <WizardFallbackBanner />}
 
         {mode === 'estruturado' && totalSteps > 0 && (
           <WizardProgress steps={steps} stepIndex={stepIndex} />
         )}
 
-        <form onSubmit={handleSubmit} className="flex min-h-0 flex-1 flex-col">
-          <div className="flex-1 overflow-y-auto px-6 py-5">
-            {mode === 'estruturado' && currentStep?.kind === 'field' && (
-              <WizardStepField
-                fieldLabel={currentStep.fieldLabel}
-                value={draft[currentStep.fieldKey] ?? ''}
-                error={currentFieldError}
-                errorId={fieldErrorId}
-                onChange={(v) => updateDraft(currentStep.fieldKey, v)}
-              />
-            )}
+        <form
+          onSubmit={(event) =>
+            handleFormSubmit(event, mode, draft, jsonText, conclusao, (outcome) => {
+              if (outcome.kind === 'success') {
+                onFinalizado();
+                return;
+              }
+              if (outcome.kind === 'mutated') {
+                setSubmitError('');
+                onError('mutated', (outcome.sessao as RelatorioSessao | null) ?? null);
+                return;
+              }
+              // validation inline: hook já atualizou submitError
+              onError('validation', null);
+            })
+          }
+          className="flex min-h-0 flex-1 flex-col"
+        >
+          <WizardBody
+            mode={mode}
+            currentStep={currentStep}
+            draft={draft}
+            fieldErrorId={fieldErrorId}
+            currentFieldError={currentFieldError}
+            conclusao={conclusao}
+            conclusaoError={conclusaoError}
+            conclusaoErrorId={conclusaoErrorId}
+            jsonText={jsonText}
+            jsonError={jsonError}
+            jsonErrorId={jsonErrorId}
+            submitError={submitError}
+            definicao={definicao}
+            onDraftChange={updateDraft}
+            onConclusaoChange={updateConclusao}
+            onJsonTextChange={updateJsonText}
+          />
 
-            {mode === 'estruturado' && currentStep?.kind === 'conclusao' && (
-              <WizardStepConclusao
-                value={conclusao}
-                error={conclusaoError}
-                errorId={conclusaoErrorId}
-                onChange={updateConclusao}
-              />
-            )}
-
-            {mode === 'estruturado' && currentStep?.kind === 'review' && definicao && (
-              <WizardStepReview
-                definicao={definicao}
-                draft={draft}
-                conclusao={conclusao}
-              />
-            )}
-
-            {mode === 'fallback-json' && (
-              <WizardStepFallback
-                jsonText={jsonText}
-                jsonError={jsonError}
-                jsonErrorId={jsonErrorId}
-                onJsonChange={updateJsonText}
-                conclusao={conclusao}
-                conclusaoError={conclusaoError}
-                conclusaoErrorId={conclusaoErrorId}
-                onConclusaoChange={updateConclusao}
-              />
-            )}
-
-            {submitError && (
-              <div
-                role="alert"
-                className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400"
-              >
-                {submitError}
-                <p className="mt-1 text-xs text-red-300/70">
-                  Suas respostas foram preservadas — você pode corrigir e tentar
-                  novamente.
-                </p>
-              </div>
-            )}
-          </div>
-
-          <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 bg-black/20 px-6 py-4">
-            <button
-              type="button"
-              onClick={requestClose}
-              disabled={submitting}
-              className={buttonSecondaryClass}
-            >
-              Cancelar
-            </button>
-
-            <div className="flex flex-wrap items-center gap-2">
-              {mode === 'estruturado' && stepIndex > 0 && (
-                <button
-                  type="button"
-                  onClick={handleVoltar}
-                  disabled={submitting}
-                  className={buttonSecondaryClass}
-                >
-                  Voltar
-                </button>
-              )}
-              {mode === 'estruturado' && stepIndex < totalSteps - 1 && (
-                <button
-                  type="button"
-                  onClick={handleProximo}
-                  disabled={submitting}
-                  className={buttonPrimaryClass}
-                >
-                  Próximo
-                </button>
-              )}
-              {(mode === 'fallback-json' ||
-                (mode === 'estruturado' && stepIndex === totalSteps - 1)) && (
-                <button
-                  type="submit"
-                  disabled={submitting}
-                  className={buttonPrimaryClass}
-                >
-                  {submitting ? 'Processando...' : 'Finalizar sessão'}
-                </button>
-              )}
-            </div>
-          </footer>
+          <WizardFooter
+            mode={mode}
+            stepIndex={stepIndex}
+            totalSteps={totalSteps}
+            submitting={submitting}
+            onCancel={requestClose}
+            onVoltar={handleVoltar}
+            onProximo={handleProximo}
+          />
         </form>
       </div>
     </dialog>
+  );
+}
+
+// ─── Subcomponentes coesos ──────────────────────────────────────────────────
+
+interface WizardHeaderProps {
+  titleId: string;
+  testeSigla: string;
+  testeNome: string;
+  mode: WizardMode;
+  definicao: CatalogEntryEstruturado | null;
+  submitting: boolean;
+  onClose: () => void;
+}
+
+function WizardHeader({
+  titleId,
+  testeSigla,
+  testeNome,
+  mode,
+  definicao,
+  submitting,
+  onClose,
+}: WizardHeaderProps) {
+  return (
+    <header className="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-4">
+      <div className="min-w-0">
+        <p className="text-xs uppercase tracking-wide text-white/40">
+          Registrar respostas
+        </p>
+        <h2 id={titleId} className="mt-1 truncate text-lg font-semibold text-white">
+          {testeSigla} — {testeNome}
+        </h2>
+        {mode === 'estruturado' && definicao && (
+          <p className="mt-1 text-xs text-white/45">
+            Definição estruturada — {definicao.fields.length} campos.
+          </p>
+        )}
+        {mode === 'fallback-json' && (
+          <p className="mt-1 text-xs text-amber-300/70">
+            Sem definição estruturada — usando editor JSON avançado.
+          </p>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onClose}
+        disabled={submitting}
+        aria-label="Fechar modal"
+        className="rounded-lg p-1.5 text-white/55 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
+      >
+        <span aria-hidden="true" className="text-lg leading-none">×</span>
+      </button>
+    </header>
+  );
+}
+
+function WizardFallbackBanner() {
+  return (
+    <div className="border-b border-amber-500/20 bg-amber-500/10 px-6 py-3 text-xs text-amber-200">
+      Este teste não possui definição estruturada no catálogo atual, ou o
+      catálogo não pôde ser carregado. Estamos usando o editor JSON
+      avançado: você é responsável por enviar um objeto não-vazio com
+      todos os valores numéricos finitos.
+    </div>
+  );
+}
+
+interface WizardBodyProps {
+  mode: WizardMode;
+  currentStep: ReturnType<typeof buildSteps>[number] | undefined;
+  draft: Record<string, string>;
+  fieldErrorId: string;
+  currentFieldError: string | null;
+  conclusao: string;
+  conclusaoError: string | null;
+  conclusaoErrorId: string;
+  jsonText: string;
+  jsonError: string | null;
+  jsonErrorId: string;
+  submitError: string;
+  definicao: CatalogEntryEstruturado | null;
+  onDraftChange: (fieldKey: string, value: string) => void;
+  onConclusaoChange: (next: string) => void;
+  onJsonTextChange: (next: string) => void;
+}
+
+function WizardBody({
+  mode,
+  currentStep,
+  draft,
+  fieldErrorId,
+  currentFieldError,
+  conclusao,
+  conclusaoError,
+  conclusaoErrorId,
+  jsonText,
+  jsonError,
+  jsonErrorId,
+  submitError,
+  definicao,
+  onDraftChange,
+  onConclusaoChange,
+  onJsonTextChange,
+}: WizardBodyProps) {
+  return (
+    <div className="flex-1 overflow-y-auto px-6 py-5">
+      {mode === 'estruturado' && currentStep?.kind === 'field' && (
+        <WizardStepField
+          fieldLabel={currentStep.fieldLabel}
+          value={draft[currentStep.fieldKey] ?? ''}
+          error={currentFieldError}
+          errorId={fieldErrorId}
+          onChange={(v) => onDraftChange(currentStep.fieldKey, v)}
+        />
+      )}
+
+      {mode === 'estruturado' && currentStep?.kind === 'conclusao' && (
+        <WizardStepConclusao
+          value={conclusao}
+          error={conclusaoError}
+          errorId={conclusaoErrorId}
+          onChange={onConclusaoChange}
+        />
+      )}
+
+      {mode === 'estruturado' && currentStep?.kind === 'review' && definicao && (
+        <WizardStepReview
+          definicao={definicao}
+          draft={draft}
+          conclusao={conclusao}
+        />
+      )}
+
+      {mode === 'fallback-json' && (
+        <WizardStepFallback
+          jsonText={jsonText}
+          jsonError={jsonError}
+          jsonErrorId={jsonErrorId}
+          onJsonChange={onJsonTextChange}
+          conclusao={conclusao}
+          conclusaoError={conclusaoError}
+          conclusaoErrorId={conclusaoErrorId}
+          onConclusaoChange={onConclusaoChange}
+        />
+      )}
+
+      {submitError && (
+        <div
+          role="alert"
+          className="mt-4 rounded-xl border border-red-500/20 bg-red-500/10 p-3 text-sm text-red-400"
+        >
+          {submitError}
+          <p className="mt-1 text-xs text-red-300/70">
+            Suas respostas foram preservadas — você pode corrigir e tentar
+            novamente.
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+interface WizardFooterProps {
+  mode: WizardMode;
+  stepIndex: number;
+  totalSteps: number;
+  submitting: boolean;
+  onCancel: () => void;
+  onVoltar: () => void;
+  onProximo: () => void;
+}
+
+function WizardFooter({
+  mode,
+  stepIndex,
+  totalSteps,
+  submitting,
+  onCancel,
+  onVoltar,
+  onProximo,
+}: WizardFooterProps) {
+  const onReview = mode === 'estruturado' && stepIndex === totalSteps - 1;
+  return (
+    <footer className="flex flex-wrap items-center justify-between gap-3 border-t border-white/10 bg-black/20 px-6 py-4">
+      <button
+        type="button"
+        onClick={onCancel}
+        disabled={submitting}
+        className={buttonSecondaryClass}
+      >
+        Cancelar
+      </button>
+
+      <div className="flex flex-wrap items-center gap-2">
+        {mode === 'estruturado' && stepIndex > 0 && (
+          <button
+            type="button"
+            onClick={onVoltar}
+            disabled={submitting}
+            className={buttonSecondaryClass}
+          >
+            Voltar
+          </button>
+        )}
+        {mode === 'estruturado' && !onReview && (
+          <button
+            type="button"
+            onClick={onProximo}
+            disabled={submitting}
+            className={buttonPrimaryClass}
+          >
+            Próximo
+          </button>
+        )}
+        {(mode === 'fallback-json' || onReview) && (
+          <button
+            type="submit"
+            disabled={submitting}
+            className={buttonPrimaryClass}
+          >
+            {submitting ? 'Processando...' : 'Finalizar sessão'}
+          </button>
+        )}
+      </div>
+    </footer>
   );
 }

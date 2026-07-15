@@ -112,11 +112,13 @@ export default function SessaoDetalhePage({
    * Callback invocado pelo wizard quando o POST de finalizar falha.
    *  - `mutated` → servidor mutou a sessão (ex: BLOQUEADO_REGRA após 422).
    *    Fechamos o modal e mostramos erro/estado atualizado na página,
-   *    recarregando o relatório. Se a sessão já veio no body do erro,
-   *    reaproveitamos; senão, refazemos o GET.
+   *    recarregando o relatório. Note que o body 422 do backend NÃO traz
+   *    `sessao` (apenas `{mensagem, motorStatus, observacao,
+   *    itensInvalidos, hashRespostas}` — ver sessoes.service.ts:213-223),
+   *    então `sessaoAtualizada` é tipicamente `null` nesse caminho; o GET
+   *    é a fonte da verdade. Se vier, usamos como atalho.
    *  - `validation` → erro de validação sem mutação. Mantemos o modal
-   *    aberto (parent não interfere); apenas mostramos um toast leve
-   *    para confirmar que o erro foi visto pelo servidor.
+   *    aberto (parent não interfere); modal já mostrou erro inline.
    */
   function handleWizardError(
     reason: 'mutated' | 'validation',

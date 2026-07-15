@@ -1,6 +1,8 @@
 import type { CatalogEntryEstruturado, RelatorioSessao } from '@/lib/app';
 
-// ─── Pure helpers (sem React, sem DOM — testáveis mentalmente) ────────────────
+// ─── Pure helpers ───────────────────────────────────────────────────────────
+// Funções puras sem React/DOM. Tipos públicos compartilhados com os
+// componentes de cada etapa.
 
 export interface FieldStep {
   kind: 'field';
@@ -37,12 +39,10 @@ export interface WizardSubmitError extends Error {
   statusCode?: number;
 }
 
-/** Status que indicam que o servidor mutou a sessão durante o POST. */
-const MUTATED_STATUSES: ReadonlyArray<RelatorioSessao['status']> = [
-  'FINALIZADO',
-  'BLOQUEADO_REGRA',
-  'CANCELADO',
-];
+/** Erros por chave de campo; `undefined` significa válido. */
+export type FieldErrors = Record<string, string | undefined>;
+
+// ─── Helpers de validação/parsing ──────────────────────────────────────────
 
 export function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -120,11 +120,6 @@ export function buildSteps(definicao: CatalogEntryEstruturado | null): WizardSte
   return steps;
 }
 
-/** Quantos passos de pergunta existem (excluindo conclusão/revisão). */
-export function totalPerguntas(steps: WizardStep[]): number {
-  return steps.filter((s) => s.kind === 'field').length;
-}
-
 /**
  * Validação de campo do wizard estruturado.
  * Retorna `null` quando válido, ou mensagem visível específica quando inválido.
@@ -150,25 +145,23 @@ export function validateConclusao(raw: string): string | null {
   return null;
 }
 
-/** Erros por chave de campo; `undefined` significa válido. */
-export type FieldErrors = Record<string, string | undefined>;
-
-export function makeEmptyErrors(): FieldErrors {
-  return {};
-}
-
-// ─── Finalizar sessão ───────────────────────────────────────────────────────
+// ─── Finalizar sessão ──────────────────────────────────────────────────────
 
 /**
  * POST /testes/sessoes/:id/finalizar com tratamento estruturado de erro.
  *
- * Em caso de falha HTTP:
- *  - Lê `mensagem`, `statusCode` e `sessao` do body.
- *  - Se `sessao.status` indica mutação (FINALIZADO / BLOQUEADO_REGRA /
- *    CANCELADO), marca o erro com `mutated = true` e propaga a sessão
- *    para o parent decidir reload + UI atualizada.
- *  - Senão, marca `mutated = false` (erro de validação sem mutação) e
- *    mantém o draft no modal.
+ * Contrato do backend (apps/api/src/modules/testes/sessoes.service.ts:213-223):
+ *  - 200 → sucesso, sem body relevante para a UI do wizard.
+ *  - 422 → motor de scoring BLOQUEOU a sessão após estornar crédito. Body:
+ *          `{ mensagem, motorStatus, observacao, itensInvalidos, hashRespostas }`.
+ *          NÃO inclui `sessao` — a sessão já está marcada como
+ *          BLOQUEADO_REGRA no servidor, e o parent deve recarregar o relatório.
+ *  - 4xx (sem 422) → erro de validação sem mutação; modal mantém draft.
+ *  - 5xx / network → erro interno; modal mantém draft.
+ *
+ * A função lê `mensagem` e (quando o backend algum dia enviar) `sessao` do
+ * body. Detecta mutação por `statusCode === 422` e cai de volta em
+ * `sessao.status` apenas para enriquecer a referência passada ao parent.
  *
  * Lança `WizardSubmitError` em ambos os casos. Erros de rede lançam Error
  * puro (sem `mutated`) — o caller trata como validação genérica.
@@ -198,11 +191,25 @@ export async function finalizarSessao({
   };
 
   const sessao = body.sessao ?? null;
-  const mutated = sessao !== null && MUTATED_STATUSES.includes(sessao.status);
+  // 422 é o status que o backend usa quando o motor de scoring BLOQUEIA a
+  // sessão (ver sessoes.service.ts:213-223). Nesse caso, a sessão já foi
+  // persistida como BLOQUEADO_REGRA e o crédito estornado — é SEMPRE uma
+  // mutação terminal do ponto de vista da UI, mesmo que o body não traga a
+  // sessão. Aceitamos `sessao` se vier (compatibilidade futura), mas não
+  // dependemos dela.
+  const mutated = res.status === 422 || (sessao !== null && isTerminal(sessao));
 
   const err = new Error(body.mensagem ?? `Erro ${res.status}`) as WizardSubmitError;
   err.mutated = mutated;
   err.sessao = sessao;
   err.statusCode = body.statusCode ?? res.status;
   throw err;
+}
+
+function isTerminal(sessao: RelatorioSessao): boolean {
+  return (
+    sessao.status === 'FINALIZADO' ||
+    sessao.status === 'BLOQUEADO_REGRA' ||
+    sessao.status === 'CANCELADO'
+  );
 }
