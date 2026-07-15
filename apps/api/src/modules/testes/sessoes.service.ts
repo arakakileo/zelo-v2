@@ -18,6 +18,8 @@ import {
 import { MotorStatus } from './scoring/scoring.types';
 import { ConsumoService } from '../../billing/consumo.service';
 import { ClinicalTestDefinitionService } from './clinical-test-definitions';
+import { LaudoBuilder, type RelatorioFinalView } from './laudo.builder';
+import { renderizarLaudoPdf } from './laudo.pdf';
 
 export interface AuthContext {
   userId: string;
@@ -28,6 +30,7 @@ export class SessoesService {
   private readonly logger = new Logger(SessoesService.name);
   private readonly crypto: CryptoService;
   private readonly clinicalDefinitions = new ClinicalTestDefinitionService();
+  private readonly laudoBuilder = new LaudoBuilder(this.clinicalDefinitions);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -398,7 +401,7 @@ export class SessoesService {
       }
     }
 
-    return {
+    const relatorio = {
       id: sessao.id,
       status: sessao.status,
       teste: sessao.teste,
@@ -428,6 +431,38 @@ export class SessoesService {
         ? { em: sessao.estornoEm, valor: sessao.estornoValor, motivo: sessao.estornoMotivo }
         : null,
     };
+
+    // modeloLaudo: view model estruturado/editável, derivado da mesma fonte
+    const modeloLaudo = this.laudoBuilder.build(relatorio as RelatorioFinalView);
+
+    return { ...relatorio, modeloLaudo };
+  }
+
+  /**
+   * Gerar PDF do laudo da sessão (bytes reais application/pdf).
+   * Mesmo view model do `modeloLaudo` textual — não duplica regras.
+   * Retorna { buffer, filename }.
+   */
+  async gerarPdfLaudo(ctx: AuthContext, sessaoId: string): Promise<{
+    buffer: Buffer;
+    filename: string;
+  }> {
+    const relatorio = await this.relatorioFinal(ctx, sessaoId);
+    const documento = this.laudoBuilder.build(relatorio as RelatorioFinalView);
+
+    const buffer = await renderizarLaudoPdf(documento);
+
+    // Filename sanitizado: sigla + paciente (sem caracteres especiais)
+    const siglaSafe = documento.cabecalho.testeSigla.replace(/[^a-zA-Z0-9-]/g, '-');
+    const nomeSafe = documento.cabecalho.pacienteNome
+      .normalize('NFD')
+      .replace(/[\u0300-\u036f]/g, '')
+      .replace(/[^a-zA-Z0-9]/g, '-')
+      .replace(/-+/g, '-')
+      .substring(0, 40);
+    const filename = `laudo-${siglaSafe}-${nomeSafe}.pdf`;
+
+    return { buffer, filename };
   }
 
   /**

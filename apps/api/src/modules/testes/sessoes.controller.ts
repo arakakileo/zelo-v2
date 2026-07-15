@@ -1,8 +1,9 @@
 import {
-  Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, UseGuards,
+  Body, Controller, Get, HttpCode, HttpStatus, Param, Post, Req, Res, UseGuards,
 } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiBearerAuth } from '@nestjs/swagger';
 import { AuthGuard } from '@nestjs/passport';
+import type { Response } from 'express';
 import { SessoesService } from './sessoes.service';
 import { IniciarSessaoDto } from './dto/iniciar-sessao.dto';
 import { FinalizarSessaoDto } from './dto/finalizar-sessao.dto';
@@ -46,5 +47,25 @@ export class SessoesController {
   @ApiOperation({ summary: 'Relatório final (descriptografado)' })
   async relatorio(@Req() req: AuthRequest, @Param('id') id: string) {
     return this.sessoesService.relatorioFinal({ userId: req.user.id }, id);
+  }
+
+  @Get(':id/relatorio.pdf')
+  @ApiOperation({ summary: 'PDF do laudo (bytes application/pdf)' })
+  async relatorioPdf(
+    @Req() req: AuthRequest,
+    @Param('id') id: string,
+    @Res() res: Response,
+  ) {
+    const { buffer, filename } = await this.sessoesService.gerarPdfLaudo(
+      { userId: req.user.id },
+      id,
+    );
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${filename}"`,
+    );
+    res.setHeader('Content-Length', String(buffer.length));
+    res.end(buffer);
   }
 }

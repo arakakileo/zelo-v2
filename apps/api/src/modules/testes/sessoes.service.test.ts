@@ -14,6 +14,7 @@ import {
   MotorStatusSessao,
   CodigoOrigemConsumo,
 } from '@zelo/contracts';
+import { CryptoService } from '@zelo/crypto';
 import {
   createMockPrismaService,
   createMockConfigService,
@@ -835,6 +836,327 @@ describe('SessoesService', () => {
       expect(result.teste).toHaveProperty('sigla', 'WASI');
       // No PII leak in teste object
       expect(Object.keys(result.teste).sort()).toEqual(['nome', 'sigla', 'slug']);
+    });
+
+    // ─── modeloLaudo ───────────────────────────────────────────────────────
+
+    function mockRelatorioFinalSessao(overrides: Partial<{
+      status: StatusSessao;
+      motorStatus: MotorStatusSessao;
+      motorScore: number | null;
+      motorBanda: string | null;
+      motorObservacao: string;
+      resultadoEnvelope: object | null;
+      dadosRespostas: unknown;
+      testeSigla: string;
+      testeNome: string;
+      testeSlug: string | null;
+      conclusaoPsicologo: string | null;
+      finalizadoEm: Date | null;
+      estorno: object | null;
+    }> = {}) {
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      const envelope = overrides.resultadoEnvelope ?? {
+        score: 18,
+        banda: 'Depressão leve',
+        versaoMotor: '0.2.0',
+        versaoRegra: '1.0.0',
+        observacao: 'OK (regra 1.0.0)',
+      };
+
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
+        id: 's1',
+        status: overrides.status ?? StatusSessao.FINALIZADO,
+        psicologoId: 'psico-1',
+        dadosRespostas: overrides.dadosRespostas ?? { item01: 1 },
+        resultadoCalculadoEncrypted: envelope ? crypto.encrypt(JSON.stringify(envelope)) : null,
+        conclusaoPsicologoEncrypted: overrides.conclusaoPsicologo !== null
+          ? crypto.encrypt(overrides.conclusaoPsicologo ?? 'Conclusão')
+          : null,
+        finalizadoEm: overrides.finalizadoEm ?? new Date('2026-07-14T10:00:00Z'),
+        motorVersao: '0.2.0',
+        motorVersaoRegra: '1.0.0',
+        motorStatus: overrides.motorStatus ?? MotorStatusSessao.OK,
+        motorScore: overrides.motorScore ?? 18,
+        motorBanda: overrides.motorBanda ?? 'Depressão leve',
+        motorHashRespostas: 'a'.repeat(64),
+        motorItensInvalidos: [],
+        motorObservacao: overrides.motorObservacao ?? 'OK (regra 1.0.0)',
+        estornoEm: overrides.estorno ? new Date() : null,
+        estornoValor: overrides.estorno ? new Decimal(15) : null,
+        estornoMotivo: overrides.estorno ? 'BLOQUEADO' : null,
+        paciente: {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('Maria das Graças'),
+          cpfEncrypted: crypto.encrypt('12345678900'),
+        },
+        teste: {
+          sigla: overrides.testeSigla ?? 'BDI-II',
+          nome: overrides.testeNome ?? 'Inventário Beck de Depressão',
+          slug: overrides.testeSlug ?? undefined,
+        },
+        psicologo: {
+          nomeCompleto: 'Dr. Silva',
+          registroProfissional: 'CRP 06/12345',
+        },
+      });
+    }
+
+    it('modeloLaudo: motor OK expõe resultado clínico corretamente', async () => {
+      mockRelatorioFinalSessao();
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      expect(result.modeloLaudo).toBeDefined();
+      expect(result.modeloLaudo.cabecalho.testeSigla).toBe('BDI-II');
+      expect(result.modeloLaudo.cabecalho.pacienteNome).toBe('Maria das Graças');
+      expect(result.modeloLaudo.cabecalho.profissionalNome).toBe('Dr. Silva');
+      expect(result.modeloLaudo.cabecalho.profissionalRegistro).toBe('CRP 06/12345');
+      expect(result.modeloLaudo.cabecalho.dataAplicacao).toMatch(/\d{2}\/\d{2}\/\d{4}/);
+      // Motor OK → resultado clínico presente
+      expect(result.modeloLaudo.resultadoClinico).not.toBeNull();
+      expect(result.modeloLaudo.resultadoClinico!.score).toBe(18);
+      expect(result.modeloLaudo.resultadoClinico!.banda).toBe('Depressão leve');
+      expect(result.modeloLaudo.conclusao).toBe('Conclusão');
+      // Não requer manual (BDI-II não está no catálogo de definições clínicas)
+      expect(result.modeloLaudo.requerManual).toBe(false);
+    });
+
+    it('modeloLaudo: manualRequired (WASI) gera aviso de dependência de manual mesmo com motor OK', async () => {
+      mockRelatorioFinalSessao({
+        testeSigla: 'WASI',
+        testeNome: 'WASI',
+        testeSlug: 'wasi',
+        motorScore: 47,
+        motorBanda: null,
+        resultadoEnvelope: {
+          score: 47,
+          banda: null,
+          versaoMotor: '0.2.0',
+          versaoRegra: null,
+          observacao: 'OK',
+        },
+        dadosRespostas: {
+          raw: { fieldScores: { vocabulario: 12 }, total: 12 },
+          structured: {
+            structuredOutputs: {
+              brutos_subtestes: { Vocabulário: 12 },
+              indices: { 'QI Total 4': null },
+            },
+            total: 12,
+            manualRequired: true,
+            pendingMessage: 'Conversões dependem das tabelas do manual.',
+          },
+        },
+      });
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      // WASI é manualRequired no catálogo → requerManual = true
+      expect(result.modeloLaudo.requerManual).toBe(true);
+      expect(result.modeloLaudo.avisoManual).toContain('manual');
+      // Motor OK → resultado clínico presente (mesmo que banda null)
+      expect(result.modeloLaudo.resultadoClinico).not.toBeNull();
+      // Respostas resumo inclui dados brutos + aviso de manual
+      expect(result.modeloLaudo.respostasResumo).toContain('Vocabulário');
+      expect(result.modeloLaudo.respostasResumo).toContain('manual');
+    });
+
+    it('modeloLaudo: DEMO nunca expõe resultado clínico — apenas aviso explícito', async () => {
+      mockRelatorioFinalSessao({
+        status: StatusSessao.BLOQUEADO_REGRA,
+        motorStatus: MotorStatusSessao.DEMO,
+        motorScore: 21,
+        motorBanda: 'Depressão moderada',
+        motorObservacao: 'DEMO (adapter não-clínico)',
+        resultadoEnvelope: null,
+        conclusaoPsicologo: null,
+        estorno: {},
+      });
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      // DEMO → resultadoClinico DEVE ser null (fail-closed)
+      expect(result.modeloLaudo.resultadoClinico).toBeNull();
+      // Aviso explícito de não-clínico
+      expect(result.modeloLaudo.requerManual).toBe(true);
+      expect(result.modeloLaudo.avisoManual).toContain('DEMO');
+      expect(result.modeloLaudo.avisoManual).toContain('não-clínico');
+      // Não inventa interpretação
+      expect(result.modeloLaudo.avisoManual).not.toContain('Depressão moderada');
+    });
+
+    it('modeloLaudo: BLOQUEADO_REGRAS_INDISPONIVEIS sem score enganoso', async () => {
+      mockRelatorioFinalSessao({
+        status: StatusSessao.BLOQUEADO_REGRA,
+        motorStatus: MotorStatusSessao.BLOQUEADO_REGRAS_INDISPONIVEIS,
+        motorScore: null,
+        motorBanda: null,
+        motorObservacao: 'Teste BAI sem regra registrada',
+        resultadoEnvelope: null,
+        conclusaoPsicologo: null,
+        testeSigla: 'BAI',
+        testeNome: 'Beck Anxiety Inventory',
+        testeSlug: null,
+        estorno: {},
+      });
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      expect(result.modeloLaudo.resultadoClinico).toBeNull();
+      expect(result.modeloLaudo.requerManual).toBe(true);
+      expect(result.modeloLaudo.avisoManual).toContain('manual');
+      // Dados brutos preservados
+      expect(result.modeloLaudo.respostasResumo).toBeDefined();
+      expect(result.modeloLaudo.respostasResumo.length).toBeGreaterThan(0);
+    });
+
+    it('modeloLaudo: BLOQUEADO_CATALOGO_INDISPONIVEL sem score', async () => {
+      mockRelatorioFinalSessao({
+        status: StatusSessao.BLOQUEADO_REGRA,
+        motorStatus: MotorStatusSessao.BLOQUEADO_CATALOGO_INDISPONIVEL,
+        motorScore: null,
+        motorBanda: null,
+        motorObservacao: 'Catálogo vazio',
+        resultadoEnvelope: null,
+        conclusaoPsicologo: null,
+        estorno: {},
+      });
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      expect(result.modeloLaudo.resultadoClinico).toBeNull();
+      expect(result.modeloLaudo.requerManual).toBe(true);
+      expect(result.modeloLaudo.avisoManual).toContain('Catálogo');
+    });
+
+    it('modeloLaudo: não vaza CPF — apenas nome do paciente no cabecalho', async () => {
+      mockRelatorioFinalSessao();
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      const modeloStr = JSON.stringify(result.modeloLaudo);
+      // CPF não pode aparecer no modeloLaudo
+      expect(modeloStr).not.toContain('12345678900');
+      expect(modeloStr).not.toContain('cpf');
+      // Nome sim
+      expect(modeloStr).toContain('Maria das Graças');
+    });
+  });
+
+  // ─── gerarPdfLaudo ──────────────────────────────────────────────────────
+
+  describe('gerarPdfLaudo', () => {
+    it('throws NotFoundException when sessao does not exist (ownership)', async () => {
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.gerarPdfLaudo(psicologoCtx, 'nonexistent'),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('throws NotFound when querying another psicólogo\'s sessão (ownership filter)', async () => {
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue(null);
+
+      await expect(
+        service.gerarPdfLaudo(psicologoCtx, 's-other'),
+      ).rejects.toThrow(NotFoundException);
+
+      const findCall = mockPrisma.sessaoTeste.findFirst.mock.calls[0][0];
+      expect(findCall.where.psicologoId).toBe('psico-1');
+    });
+
+    it('gera PDF real começando com %PDF — motor OK', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      const envelope = {
+        score: 18,
+        banda: 'Depressão leve',
+        versaoMotor: '0.2.0',
+        versaoRegra: '1.0.0',
+        observacao: 'OK (regra 1.0.0)',
+      };
+
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
+        id: 's1',
+        status: StatusSessao.FINALIZADO,
+        psicologoId: 'psico-1',
+        dadosRespostas: { item01: 1 },
+        resultadoCalculadoEncrypted: crypto.encrypt(JSON.stringify(envelope)),
+        conclusaoPsicologoEncrypted: crypto.encrypt('Conclusão'),
+        finalizadoEm: new Date(),
+        motorVersao: '0.2.0',
+        motorVersaoRegra: '1.0.0',
+        motorStatus: MotorStatusSessao.OK,
+        motorScore: 18,
+        motorBanda: 'Depressão leve',
+        motorHashRespostas: 'a'.repeat(64),
+        motorItensInvalidos: [],
+        motorObservacao: 'OK',
+        estornoEm: null,
+        estornoValor: null,
+        estornoMotivo: null,
+        paciente: {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('João Açucar'),
+          cpfEncrypted: crypto.encrypt('secret'),
+        },
+        teste: { sigla: 'BDI-II', nome: 'Inventário Beck', slug: null },
+        psicologo: { nomeCompleto: 'Dr. Silva', registroProfissional: 'CRP 06/12345' },
+      });
+
+      const { buffer, filename } = await service.gerarPdfLaudo(psicologoCtx, 's1');
+
+      // PDF real: começa com %PDF
+      expect(buffer.slice(0, 4).toString('ascii')).toBe('%PDF');
+      // Content-type implícito: é um Buffer de PDF válido
+      expect(buffer.length).toBeGreaterThan(100);
+      // Filename sanitizado: sem acento, sem espaço
+      expect(filename).toBe('laudo-BDI-II-Joao-Acucar.pdf');
+      expect(filename).not.toContain('ç');
+      expect(filename).not.toContain('ã');
+    });
+
+    it('gera PDF mesmo para sessão bloqueada (DEMO) — sem resultado clínico', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
+        id: 's1',
+        status: StatusSessao.BLOQUEADO_REGRA,
+        psicologoId: 'psico-1',
+        dadosRespostas: null,
+        resultadoCalculadoEncrypted: null,
+        conclusaoPsicologoEncrypted: null,
+        finalizadoEm: null,
+        motorVersao: '0.2.0',
+        motorVersaoRegra: null,
+        motorStatus: MotorStatusSessao.DEMO,
+        motorScore: 21,
+        motorBanda: 'Depressão moderada',
+        motorHashRespostas: 'b'.repeat(64),
+        motorItensInvalidos: [],
+        motorObservacao: 'DEMO',
+        estornoEm: new Date(),
+        estornoValor: new Decimal(15),
+        estornoMotivo: 'DEMO bloqueado',
+        paciente: {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('Paciente Teste'),
+          cpfEncrypted: crypto.encrypt('x'),
+        },
+        teste: { sigla: 'BDI-II', nome: 'BDI-II', slug: null },
+        psicologo: { nomeCompleto: 'Dr', registroProfissional: 'CRP' },
+      });
+
+      const { buffer } = await service.gerarPdfLaudo(psicologoCtx, 's1');
+
+      expect(buffer.slice(0, 4).toString('ascii')).toBe('%PDF');
+      // PDF não contém o score DEMO como resultado clínico
+      const pdfText = buffer.toString('latin1');
+      expect(pdfText).not.toContain('Depressão moderada');
     });
   });
 });
