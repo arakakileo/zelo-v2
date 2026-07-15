@@ -18,7 +18,7 @@ import {
 import { MotorStatus } from './scoring/scoring.types';
 import { ConsumoService } from '../../billing/consumo.service';
 import { ClinicalTestDefinitionService } from './clinical-test-definitions';
-import { LaudoBuilder, type RelatorioFinalView } from './laudo.builder';
+import { LaudoBuilder, gerarTextoLaudo, type RelatorioFinalView } from './laudo.builder';
 import { renderizarLaudoPdf } from './laudo.pdf';
 
 export interface AuthContext {
@@ -375,7 +375,7 @@ export class SessoesService {
         estornoEm: true,
         estornoValor: true,
         estornoMotivo: true,
-        paciente: { select: { id: true, nomeEncrypted: true, cpfEncrypted: true } },
+        paciente: { select: { id: true, nomeEncrypted: true } },
         teste: { select: { sigla: true, nome: true, slug: true } },
         psicologo: { select: { nomeCompleto: true, registroProfissional: true } },
       },
@@ -435,19 +435,35 @@ export class SessoesService {
     // modeloLaudo: view model estruturado/editável, derivado da mesma fonte
     const modeloLaudo = this.laudoBuilder.build(relatorio as RelatorioFinalView);
 
-    return { ...relatorio, modeloLaudo };
+    // textoLaudo: string copy-ready derivada do mesmo view model (sem JSON.stringify)
+    const textoLaudo = gerarTextoLaudo(modeloLaudo);
+
+    return { ...relatorio, modeloLaudo, textoLaudo };
   }
 
   /**
    * Gerar PDF do laudo da sessão (bytes reais application/pdf).
    * Mesmo view model do `modeloLaudo` textual — não duplica regras.
    * Retorna { buffer, filename }.
+   *
+   * Sessões ABERTA ou CANCELADA não geram laudo — rejeita com Conflict.
    */
   async gerarPdfLaudo(ctx: AuthContext, sessaoId: string): Promise<{
     buffer: Buffer;
     filename: string;
   }> {
     const relatorio = await this.relatorioFinal(ctx, sessaoId);
+
+    // Fail-closed: sessão ABERTA ou CANCELADA não pode virar laudo.
+    if (
+      relatorio.status === StatusSessao.ABERTO ||
+      relatorio.status === StatusSessao.CANCELADO
+    ) {
+      throw new BadRequestException(
+        `Não é possível gerar laudo de sessão ${relatorio.status}. Apenas sessões finalizadas ou bloqueadas têm relatório.`,
+      );
+    }
+
     const documento = this.laudoBuilder.build(relatorio as RelatorioFinalView);
 
     const buffer = await renderizarLaudoPdf(documento);
@@ -479,7 +495,7 @@ export class SessoesService {
         finalizadoEm: true,
         createdAt: true,
         teste: { select: { sigla: true, nome: true } },
-        paciente: { select: { id: true, nomeEncrypted: true, cpfEncrypted: true } },
+        paciente: { select: { id: true, nomeEncrypted: true } },
       },
       orderBy: { createdAt: 'desc' },
     });

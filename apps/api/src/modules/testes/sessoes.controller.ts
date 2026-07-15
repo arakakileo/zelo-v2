@@ -60,10 +60,13 @@ export class SessoesController {
       { userId: req.user.id },
       id,
     );
+    // Content-Disposition seguro: filename já sanitizado pelo service, mas
+    // garantimos que não há chars de quebra de header (CR/LF/aspas).
+    const safeFilename = filename.replace(/[\r\n"]/g, '');
     res.setHeader('Content-Type', 'application/pdf');
     res.setHeader(
       'Content-Disposition',
-      `attachment; filename="${filename}"`,
+      `attachment; filename="${safeFilename}"`,
     );
     res.setHeader('Content-Length', String(buffer.length));
     res.end(buffer);

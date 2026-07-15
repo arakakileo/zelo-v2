@@ -1,13 +1,18 @@
 /**
  * laudo.builder — constrói o DocumentoLaudo a partir do relatório da sessão.
  *
- * É o ÚNICO lugar onde as regras de conteúdo do laudo vivem. Tanto o JSON
- * `modeloLaudo` quanto o PDF derivam deste builder, garantindo consistência.
+ * É o ÚNICO lugar onde as regras de conteúdo do laudo vivem. O JSON
+ * `modeloLaudo`, o `textoLaudo` copy-ready e o PDF derivam deste builder,
+ * garantindo consistência.
  *
  * Compliance clínica (fail-closed):
- * - `resultadoClinico` só é populado quando motorStatus === 'OK'.
+ * - `resultadoClinico` só é populado quando motorStatus === 'OK' AND o teste
+ *   não é catalogado como manualRequired.
  * - Para manualRequired / DEMO / bloqueado / sem regra, nunca inventa
  *   interpretação normativa: inclui dados brutos permitidos + aviso explícito.
+ * - Nunca fabrica score=0 nem banda='' a partir de valores nulos: se os
+ *   campos necessários não existirem (score/banda null), resultadoClinico
+ *   fica null.
  */
 
 import { MotorStatusSessao } from '@zelo/contracts';
@@ -216,6 +221,84 @@ function formatValor(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Gera uma string copy-ready a partir do DocumentoLaudo.
+ *
+ * É o texto estruturado pronto para copiar/colar — sem JSON.stringify.
+ * Inclui identificação, dados, conclusão e limitações.
+ * Deriva do MESMO view model: não duplica regras clínicas.
+ */
+export function gerarTextoLaudo(doc: DocumentoLaudo): string {
+  const lines: string[] = [];
+
+  // Título — diferente para sessão não-finalizada
+  const titulo = doc.statusSessao === 'FINALIZADO'
+    ? `Laudo Psicológico — ${doc.cabecalho.testeSigla}`
+    : `Relatório de Sessão — ${doc.cabecalho.testeSigla}`;
+  lines.push(titulo);
+  lines.push('');
+
+  // Identificação
+  lines.push('IDENTIFICAÇÃO');
+  lines.push(`Paciente: ${doc.cabecalho.pacienteNome}`);
+  lines.push(`Profissional: ${doc.cabecalho.profissionalNome}`);
+  lines.push(`Registro: ${doc.cabecalho.profissionalRegistro}`);
+  lines.push(
+    `Data da aplicação: ${doc.cabecalho.dataAplicacao ?? 'Não registrada'}`,
+  );
+  lines.push(
+    `Instrumento: ${doc.cabecalho.testeSigla} — ${doc.cabecalho.testeNome}`,
+  );
+  lines.push(`Status da sessão: ${doc.statusSessao}`);
+  lines.push('');
+
+  // Respostas/resultados
+  lines.push('RESPOSTAS E RESULTADOS DISPONÍVEIS');
+  lines.push(doc.respostasResumo);
+  lines.push('');
+
+  // Resultado clínico (apenas quando existe)
+  if (doc.resultadoClinico) {
+    const rc = doc.resultadoClinico;
+    lines.push('RESULTADO CLÍNICO');
+    lines.push(`Escore: ${rc.score}`);
+    lines.push(`Classificação: ${rc.banda}`);
+    lines.push(`Versão do motor: ${rc.versaoMotor}`);
+    lines.push(`Versão da regra: ${rc.versaoRegra ?? '—'}`);
+    if (rc.observacao) {
+      lines.push(`Observação: ${rc.observacao}`);
+    }
+    lines.push('');
+  }
+
+  // Aviso de manual
+  if (doc.avisoManual) {
+    lines.push('AVISO DE DEPENDÊNCIA DE MANUAL');
+    lines.push(doc.avisoManual);
+    lines.push('');
+  }
+
+  // Conclusão
+  if (doc.conclusao) {
+    lines.push('CONCLUSÃO');
+    lines.push(doc.conclusao);
+    lines.push('');
+  }
+
+  // Observações e limitações
+  if (doc.observacoes) {
+    lines.push('OBSERVAÇÕES E LIMITAÇÕES');
+    lines.push(doc.observacoes);
+    lines.push('');
+  }
+
+  lines.push(
+    'Documento gerado pelo sistema Zelo. Este modelo é editável e deve ser revisado e complementado pelo profissional responsável.',
+  );
+
+  return lines.join('\n');
+}
+
 export class LaudoBuilder {
   constructor(
     private readonly clinicalDefinitions: ClinicalTestDefinitionService,
@@ -224,28 +307,56 @@ export class LaudoBuilder {
   /**
    * Constrói o DocumentoLaudo a partir do relatório da sessão.
    *
-   * Regra central: resultado clínico só quando motorStatus === 'OK'.
-   * Para manualRequired / DEMO / bloqueado, resultadoClinico = null e
-   * avisoManual descreve a dependência.
+   * Regra central: resultado clínico só quando motorStatus === 'OK' AND o
+   * teste não é manualRequired. Para manualRequired / DEMO / bloqueado,
+   * resultadoClinico = null e avisoManual descreve a dependência.
+   *
+   * Nunca fabrica score/banda a partir de nulos: se score ou banda forem
+   * null em qualquer fonte, resultadoClinico fica null.
    */
   build(rel: RelatorioFinalView): DocumentoLaudo {
     const motorStatus = rel.motor.status;
     const isMotorOk = motorStatus === MotorStatusSessao.OK;
 
-    // Resultado clínico: APENAS quando motor OK
+    // Verifica se o teste é catalogado como manualRequired via definição clínica
+    let testManualRequired = false;
+    let pendingMessage: string | null = null;
+    if (rel.teste.slug) {
+      const def = this.clinicalDefinitions.getDefinitionBySlug(rel.teste.slug);
+      if (def) {
+        testManualRequired = def.manualRequired;
+        pendingMessage = def.pendingMessage;
+      }
+    }
+
+    // Resultado clínico: APENAS quando motor OK AND teste não é manualRequired
+    // AND score/banda não são nulos (não fabrica 0/'' a partir de nulos).
     let resultadoClinico: ResultadoClinicoLaudo | null = null;
-    if (isMotorOk && rel.resultadoClinico) {
-      resultadoClinico = {
-        score: rel.resultadoClinico.score ?? rel.motor.score ?? 0,
-        banda: rel.resultadoClinico.banda ?? rel.motor.banda ?? '',
-        versaoMotor: rel.resultadoClinico.versaoMotor,
-        versaoRegra: rel.resultadoClinico.versaoRegra,
-        observacao: rel.resultadoClinico.observacao,
-      };
+    if (isMotorOk && !testManualRequired && rel.resultadoClinico) {
+      const rc = rel.resultadoClinico;
+      const score = rc.score ?? rel.motor.score;
+      const banda = rc.banda ?? rel.motor.banda;
+
+      // Fail-closed: se score ou banda são nulos, NÃO fabrica 0/'' —
+      // resultado clínico não existe.
+      if (score !== null && score !== undefined && banda !== null && banda !== undefined) {
+        resultadoClinico = {
+          score,
+          banda,
+          versaoMotor: rc.versaoMotor,
+          versaoRegra: rc.versaoRegra,
+          observacao: rc.observacao,
+        };
+      }
     }
 
     // Determinar se requer manual + aviso
-    const { requerManual, avisoManual } = this.avaliarDependencia(rel, isMotorOk);
+    const { requerManual, avisoManual } = this.avaliarDependencia(
+      rel,
+      isMotorOk,
+      testManualRequired,
+      pendingMessage,
+    );
 
     const observacoesParts: string[] = [];
     if (rel.estorno) {
@@ -258,6 +369,7 @@ export class LaudoBuilder {
     }
 
     return {
+      statusSessao: rel.status as DocumentoLaudo['statusSessao'],
       cabecalho: {
         testeSigla: rel.teste.sigla,
         testeNome: rel.teste.nome,
@@ -285,18 +397,9 @@ export class LaudoBuilder {
   private avaliarDependencia(
     rel: RelatorioFinalView,
     isMotorOk: boolean,
+    testManualRequired: boolean,
+    pendingMessage: string | null,
   ): { requerManual: boolean; avisoManual: string | null } {
-    // Verifica se o teste é catalogado como manualRequired via definição clínica
-    let testManualRequired = false;
-    let pendingMessage: string | null = null;
-    if (rel.teste.slug) {
-      const def = this.clinicalDefinitions.getDefinitionBySlug(rel.teste.slug);
-      if (def) {
-        testManualRequired = def.manualRequired;
-        pendingMessage = def.pendingMessage;
-      }
-    }
-
     const motorStatus = rel.motor.status;
 
     // Motor bloqueado ou DEMO: resultado não-clínico

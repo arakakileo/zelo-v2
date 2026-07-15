@@ -709,7 +709,6 @@ describe('SessoesService', () => {
         paciente: {
           id: 'p1',
           nomeEncrypted: crypto.encrypt('Maria das Graças'),
-          cpfEncrypted: crypto.encrypt('12345678900'),
         },
         teste: { sigla: 'BDI-II', nome: 'Inventário Beck de Depressão' },
         psicologo: {
@@ -764,7 +763,6 @@ describe('SessoesService', () => {
         paciente: {
           id: 'p1',
           nomeEncrypted: crypto.encrypt('Maria'),
-          cpfEncrypted: crypto.encrypt('000'),
         },
         teste: { sigla: 'BAI', nome: 'Beck Anxiety Inventory' },
         psicologo: {
@@ -820,7 +818,6 @@ describe('SessoesService', () => {
         paciente: {
           id: 'p1',
           nomeEncrypted: crypto.encrypt('Teste Paciente'),
-          cpfEncrypted: crypto.encrypt('123'),
         },
         teste: { sigla: 'WASI', nome: 'WASI', slug: 'wasi' },
         psicologo: {
@@ -878,8 +875,8 @@ describe('SessoesService', () => {
         motorVersao: '0.2.0',
         motorVersaoRegra: '1.0.0',
         motorStatus: overrides.motorStatus ?? MotorStatusSessao.OK,
-        motorScore: overrides.motorScore ?? 18,
-        motorBanda: overrides.motorBanda ?? 'Depressão leve',
+        motorScore: overrides.motorScore !== undefined ? overrides.motorScore : 18,
+        motorBanda: overrides.motorBanda !== undefined ? overrides.motorBanda : 'Depressão leve',
         motorHashRespostas: 'a'.repeat(64),
         motorItensInvalidos: [],
         motorObservacao: overrides.motorObservacao ?? 'OK (regra 1.0.0)',
@@ -889,7 +886,6 @@ describe('SessoesService', () => {
         paciente: {
           id: 'p1',
           nomeEncrypted: crypto.encrypt('Maria das Graças'),
-          cpfEncrypted: crypto.encrypt('12345678900'),
         },
         teste: {
           sigla: overrides.testeSigla ?? 'BDI-II',
@@ -956,11 +952,62 @@ describe('SessoesService', () => {
       // WASI é manualRequired no catálogo → requerManual = true
       expect(result.modeloLaudo.requerManual).toBe(true);
       expect(result.modeloLaudo.avisoManual).toContain('manual');
-      // Motor OK → resultado clínico presente (mesmo que banda null)
-      expect(result.modeloLaudo.resultadoClinico).not.toBeNull();
+      // FAIL-CLOSED: motor OK mas teste manualRequired → resultadoClinico DEVE ser null
+      // (não fabrica interpretação clínica sem conversão normativa licenciada)
+      expect(result.modeloLaudo.resultadoClinico).toBeNull();
       // Respostas resumo inclui dados brutos + aviso de manual
       expect(result.modeloLaudo.respostasResumo).toContain('Vocabulário');
       expect(result.modeloLaudo.respostasResumo).toContain('manual');
+    });
+
+    it('modeloLaudo: motor OK mas score/banda null NÃO fabrica 0/vazio', async () => {
+      mockRelatorioFinalSessao({
+        motorScore: null,
+        motorBanda: null,
+        resultadoEnvelope: {
+          score: null,
+          banda: null,
+          versaoMotor: '0.2.0',
+          versaoRegra: '1.0.0',
+          observacao: 'OK',
+        },
+      });
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      // FAIL-CLOSED: motor OK mas score/banda são null → resultadoClinico null
+      // (não fabrica score=0 nem banda='')
+      expect(result.modeloLaudo.resultadoClinico).toBeNull();
+    });
+
+    it('modeloLaudo: textoLaudo é string copy-ready sem JSON.stringify', async () => {
+      mockRelatorioFinalSessao();
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      expect(typeof result.textoLaudo).toBe('string');
+      expect(result.textoLaudo).toContain('Maria das Graças');
+      expect(result.textoLaudo).toContain('BDI-II');
+      expect(result.textoLaudo).toContain('Dr. Silva');
+      expect(result.textoLaudo).toContain('CRP 06/12345');
+      expect(result.textoLaudo).toContain('IDENTIFICAÇÃO');
+      expect(result.textoLaudo).toContain('FINALIZADO');
+      // Não deve conter sintaxe JSON
+      expect(result.textoLaudo).not.toContain('{');
+      expect(result.textoLaudo).not.toContain('JSON');
+    });
+
+    it('modeloLaudo: não vaza CPF — cpfEncrypted não é mais selecionado', async () => {
+      mockRelatorioFinalSessao();
+
+      const result = await service.relatorioFinal(psicologoCtx, 's1');
+
+      const modeloStr = JSON.stringify(result.modeloLaudo);
+      // CPF não pode aparecer no modeloLaudo
+      expect(modeloStr).not.toContain('12345678900');
+      expect(modeloStr).not.toContain('cpf');
+      // Nome sim
+      expect(modeloStr).toContain('Maria das Graças');
     });
 
     it('modeloLaudo: DEMO nunca expõe resultado clínico — apenas aviso explícito', async () => {
@@ -1067,6 +1114,78 @@ describe('SessoesService', () => {
       expect(findCall.where.psicologoId).toBe('psico-1');
     });
 
+    it('REJEITA sessão ABERTA — BadRequest antes de gerar laudo', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
+        id: 's1',
+        status: StatusSessao.ABERTO,
+        psicologoId: 'psico-1',
+        dadosRespostas: null,
+        resultadoCalculadoEncrypted: null,
+        conclusaoPsicologoEncrypted: null,
+        finalizadoEm: null,
+        motorVersao: null,
+        motorVersaoRegra: null,
+        motorStatus: null,
+        motorScore: null,
+        motorBanda: null,
+        motorHashRespostas: null,
+        motorItensInvalidos: [],
+        motorObservacao: null,
+        estornoEm: null,
+        estornoValor: null,
+        estornoMotivo: null,
+        paciente: {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('Paciente Aberto'),
+        },
+        teste: { sigla: 'BDI-II', nome: 'BDI-II', slug: null },
+        psicologo: { nomeCompleto: 'Dr', registroProfissional: 'CRP' },
+      });
+
+      await expect(
+        service.gerarPdfLaudo(psicologoCtx, 's1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
+    it('REJEITA sessão CANCELADA — BadRequest, não vira laudo', async () => {
+      const { CryptoService } = await import('@zelo/crypto');
+      const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
+
+      mockPrisma.sessaoTeste.findFirst.mockResolvedValue({
+        id: 's1',
+        status: StatusSessao.CANCELADO,
+        psicologoId: 'psico-1',
+        dadosRespostas: null,
+        resultadoCalculadoEncrypted: null,
+        conclusaoPsicologoEncrypted: null,
+        finalizadoEm: null,
+        motorVersao: null,
+        motorVersaoRegra: null,
+        motorStatus: null,
+        motorScore: null,
+        motorBanda: null,
+        motorHashRespostas: null,
+        motorItensInvalidos: [],
+        motorObservacao: null,
+        estornoEm: new Date(),
+        estornoValor: new Decimal(15),
+        estornoMotivo: 'Cancelamento',
+        paciente: {
+          id: 'p1',
+          nomeEncrypted: crypto.encrypt('Paciente Cancelado'),
+        },
+        teste: { sigla: 'BDI-II', nome: 'BDI-II', slug: null },
+        psicologo: { nomeCompleto: 'Dr', registroProfissional: 'CRP' },
+      });
+
+      await expect(
+        service.gerarPdfLaudo(psicologoCtx, 's1'),
+      ).rejects.toThrow(BadRequestException);
+    });
+
     it('gera PDF real começando com %PDF — motor OK', async () => {
       const { CryptoService } = await import('@zelo/crypto');
       const crypto = new CryptoService(Buffer.alloc(32).toString('base64'));
@@ -1101,7 +1220,6 @@ describe('SessoesService', () => {
         paciente: {
           id: 'p1',
           nomeEncrypted: crypto.encrypt('João Açucar'),
-          cpfEncrypted: crypto.encrypt('secret'),
         },
         teste: { sigla: 'BDI-II', nome: 'Inventário Beck', slug: null },
         psicologo: { nomeCompleto: 'Dr. Silva', registroProfissional: 'CRP 06/12345' },
@@ -1145,7 +1263,6 @@ describe('SessoesService', () => {
         paciente: {
           id: 'p1',
           nomeEncrypted: crypto.encrypt('Paciente Teste'),
-          cpfEncrypted: crypto.encrypt('x'),
         },
         teste: { sigla: 'BDI-II', nome: 'BDI-II', slug: null },
         psicologo: { nomeCompleto: 'Dr', registroProfissional: 'CRP' },

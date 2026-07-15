@@ -58,10 +58,16 @@ export function renderizarLaudoPdf(doc: DocumentoLaudo): Promise<Buffer> {
  */
 function writeLaudoContent(pdf: PDFKit.PDFDocument, doc: DocumentoLaudo): void {
   // ─── Cabeçalho ──────────────────────────────────────────────────────────
+  // Título condicional: "Laudo Psicológico" só para FINALIZADO com resultado
+  // clínico válido. Sessões bloqueadas/canceladas sem clínico → "Relatório".
+  const isLaudo = doc.statusSessao === 'FINALIZADO' && doc.resultadoClinico !== null;
+  const titulo = isLaudo
+    ? `Laudo Psicológico — ${doc.cabecalho.testeSigla}`
+    : `Relatório de Sessão — ${doc.cabecalho.testeSigla}`;
   pdf
     .font(FONT_BOLD)
     .fontSize(16)
-    .text(`Laudo Psicológico — ${doc.cabecalho.testeSigla}`, { align: 'center' });
+    .text(titulo, { align: 'center' });
 
   pdf.moveDown(0.3);
   pdf
@@ -85,6 +91,7 @@ function writeLaudoContent(pdf: PDFKit.PDFDocument, doc: DocumentoLaudo): void {
     ['Registro:', doc.cabecalho.profissionalRegistro],
     ['Data da aplicação:', doc.cabecalho.dataAplicacao ?? 'Não registrada'],
     ['Instrumento:', `${doc.cabecalho.testeSigla} — ${doc.cabecalho.testeNome}`],
+    ['Status da sessão:', doc.statusSessao],
   ];
 
   for (const [label, value] of idLines) {
