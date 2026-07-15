@@ -108,6 +108,38 @@ export default function SessaoDetalhePage({
     }
   }
 
+  /**
+   * Callback invocado pelo wizard quando o POST de finalizar falha.
+   *  - `mutated` → servidor mutou a sessão (ex: BLOQUEADO_REGRA após 422).
+   *    Fechamos o modal e mostramos erro/estado atualizado na página,
+   *    recarregando o relatório. Se a sessão já veio no body do erro,
+   *    reaproveitamos; senão, refazemos o GET.
+   *  - `validation` → erro de validação sem mutação. Mantemos o modal
+   *    aberto (parent não interfere); apenas mostramos um toast leve
+   *    para confirmar que o erro foi visto pelo servidor.
+   */
+  function handleWizardError(
+    reason: 'mutated' | 'validation',
+    sessaoAtualizada: typeof relatorio,
+  ) {
+    if (reason === 'mutated') {
+      setWizardOpen(false);
+      const isBloqueada = sessaoAtualizada?.status === 'BLOQUEADO_REGRA';
+      const isFinalizada = sessaoAtualizada?.status === 'FINALIZADO';
+      setError(
+        isBloqueada
+          ? 'O motor de scoring bloqueou esta sessão (regra indisponível ou não-clínica). Os créditos foram estornados.'
+          : isFinalizada
+            ? 'A sessão já consta como finalizada no servidor.'
+            : 'A sessão mudou de estado no servidor.',
+      );
+      load().catch((err) =>
+        setError(err instanceof Error ? err.message : 'Erro ao recarregar relatório'),
+      );
+    }
+    // 'validation' → modal mantém draft + mensagem interna; nada a fazer aqui.
+  }
+
   if (!token || loading) {
     return <p className="text-sm text-white/40">Carregando sessão...</p>;
   }
@@ -139,15 +171,9 @@ export default function SessaoDetalhePage({
               Aplicado por: {relatorio.psicologo.nome}
               {relatorio.psicologo.registro ? ` (CRP ${relatorio.psicologo.registro})` : ''}
             </p>
-            {relatorio.teste.slug && (
+            {relatorio.teste.slug && definicaoEstruturada && (
               <p className="mt-1 text-xs text-white/30">
-                Definição estruturada:{' '}
-                <code className="rounded bg-white/5 px-1 py-0.5 text-white/55">
-                  {relatorio.teste.slug}
-                </code>
-                {definicaoEstruturada
-                  ? ` (${definicaoEstruturada.fields.length} campos)`
-                  : ' (definição não encontrada no catálogo atual)'}
+                Definição estruturada disponível ({definicaoEstruturada.fields.length} campos).
               </p>
             )}
           </div>
@@ -196,12 +222,8 @@ export default function SessaoDetalhePage({
               </>
             ) : relatorio.teste.slug ? (
               <>
-                O teste possui slug estruturado (
-                <code className="rounded bg-white/5 px-1 py-0.5 text-white/55">
-                  {relatorio.teste.slug}
-                </code>
-                ) mas o catálogo detalhado não pôde ser carregado. O wizard abrirá no modo
-                editor JSON avançado.
+                O teste possui definição estruturada, mas o catálogo detalhado não pôde ser
+                carregado. O wizard abrirá no modo editor JSON avançado.
               </>
             ) : (
               <>
@@ -372,6 +394,7 @@ export default function SessaoDetalhePage({
             setError(err instanceof Error ? err.message : 'Erro ao recarregar relatório');
           }
         }}
+        onError={handleWizardError}
       />
     </section>
   );
